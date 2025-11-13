@@ -1,2 +1,3 @@
 claude_dir: C:/Users/11988/.claude
 sessions_db: ./sessions.db
+port: 8207

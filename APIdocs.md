@@ -1,6 +1,6 @@
 # API 文档
 
-FastAPI 服务默认运行在 `http://127.0.0.1:8207`，并提供以下接口。
+FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调整端口），并提供以下接口：
 
 ## 1. `POST /chat`
 
@@ -21,14 +21,14 @@ FastAPI 服务默认运行在 `http://127.0.0.1:8207`，并提供以下接口。
   ```
 - **响应**：`text/event-stream`，事件类型包含：
   - `session`：返回 `session_id`、`cwd`、`is_new`。
-  - `token`：助手增量文本块（便于即时渲染）。
-  - `message`：Claude Agent SDK 的原始消息负载（`SystemMessage` / `AssistantMessage` / `ResultMessage`），便于获取工具调用、token 使用等完整信息。
-  - `done`：本轮完成，附带最终 `length`。
+  - `token`：助手增量文本块（便于前端逐字渲染）。
+  - `message`：Claude Agent SDK 原始消息负载（`SystemMessage` / `AssistantMessage` / `ResultMessage`），包含工具调用、token 使用等完整信息。
+  - `done`：一轮完成，附带 `length` 等元信息。
   - `error`：异常信息。
 
 ## 2. `GET /sessions`
 
-- **功能**：列出所有已知主会话的元信息。
+- **功能**：列出所有已知主会话元信息。
 - **响应**：
   ```json
   [
@@ -80,11 +80,11 @@ FastAPI 服务默认运行在 `http://127.0.0.1:8207`，并提供以下接口。
     ]
   }
   ```
-  `messages` 直接返回 JSONL 文件中的完整记录，保留全部字段（包括工具调用、引用等），数据位于 `~/.claude/projects/<slug>/<session>.jsonl`。
+  `messages` 字段直接返回 JSONL 文件中的完整记录，保留全部字段（包括工具调用、引用等），数据位于 `~/.claude/projects/<slug>/<session>.jsonl`。
 
 ## 4. `POST /sessions/load`
 
-- **功能**：扫描 Claude Code 的存档目录，把主会话与 agent 子会话写入数据库。
+- **功能**：扫描 Claude Code 存档目录，把主会话和 agent 子会话写入数据库。
 - **请求体（可选）**：
   ```json
   {
@@ -106,9 +106,12 @@ FastAPI 服务默认运行在 `http://127.0.0.1:8207`，并提供以下接口。
   ```yaml
   claude_dir: C:/Users/11988/.claude
   sessions_db: ./sessions.db
+  port: 8207
   ```
   - `claude_dir`：Claude Code 项目的根目录（包含 `projects/`）。
   - `sessions_db`：SQLite 文件路径，支持绝对或相对路径。
+  - `port`：FastAPI 服务监听端口，`start_server.ps1` 会读取此配置。
+
 - SQLite 表：
   - `sessions`：主会话（`session_id`、`title`、`cwd`、`created_at`、`updated_at`）。
   - `agent_sessions`：子 Agent（`agent_id`、`parent_session_id`、`title`、`cwd`、时间戳）。
@@ -117,3 +120,4 @@ FastAPI 服务默认运行在 `http://127.0.0.1:8207`，并提供以下接口。
 
 - `cc_B/read_session.py`：从 JSONL 读取指定会话历史。
 - `cc_B/test_read_session_api.py`：调用 API 验证 `/sessions` 相关读操作。
+- `start_server.ps1`：一键启动 FastAPI（支持读取虚拟环境 Python、`config.yaml` 端口、自动展示 base URL）。
