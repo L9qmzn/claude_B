@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Literal
+
+from pydantic import BaseModel, Field
+
+
+class Session(BaseModel):
+    session_id: str
+    title: str
+    cwd: str
+    created_at: datetime
+    updated_at: datetime
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@dataclass
+class SessionFileMetadata:
+    session_id: str
+    title: str
+    cwd: str
+    created_at: datetime
+    updated_at: datetime
+    parent_session_id: Optional[str] = None
+    is_agent_run: bool = False
+
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    cwd: Optional[str] = None
+    message: str
+    permission_mode: Literal["default", "plan", "acceptEdits", "bypassPermissions"] = "default"
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    title: str
+    cwd: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+
+
+class LoadSessionsRequest(BaseModel):
+    claude_dir: Optional[str] = None

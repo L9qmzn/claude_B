@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+
+from claude_agent_sdk import (
+    query,
+    ClaudeAgentOptions,
+    AssistantMessage,
+    SystemMessage,
+    ResultMessage,
+    TextBlock,
+)
+
+from .config import CLAUDE_ROOT
+from .database import init_db
+from .models import ChatRequest, LoadSessionsRequest, Session, SessionSummary
+from .session_store import (
+    bootstrap_sessions_from_files,
+    fetch_session,
+    list_session_summaries,
+    persist_session_metadata,
+)
+from .streaming import _dump_sdk_message, _log_sdk_message, format_sse
+
+
+def create_app() -> FastAPI:
+    init_db()
+    bootstrap_sessions_from_files()
+
+    app = FastAPI(title="Claude Agent SDK Chat Backend (Streaming + Sessions + CWD)")
+
+    @app.get("/sessions", response_model=List[SessionSummary])
+    async def list_sessions_route() -> List[SessionSummary]:
+        """
+        列出当前进程里所有已知会话（包含 cwd）
+        """
+        return list_session_summaries()
+
+    @app.get("/sessions/{session_id}", response_model=Session)
+    async def get_session_route(session_id: str) -> Session:
+        """
+        返回某个会话的详细信息（包含 cwd 和历史消息）
+        """
+        sess = fetch_session(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return sess
+
+    @app.post("/sessions/load")
+    async def load_sessions_route(body: LoadSessionsRequest):
+        try:
+            stats = bootstrap_sessions_from_files(body.claude_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        resolved_root = (
+            Path(body.claude_dir).expanduser() if body.claude_dir else CLAUDE_ROOT
+        )
+
+        return {
+            "claude_dir": str(resolved_root),
+            "sessions_loaded": stats["sessions"],
+            "agent_runs_loaded": stats["agent_runs"],
+        }
+
+    @app.post("/chat")
+    async def chat_route(body: ChatRequest):
+        """
+        核心流式聊天接口，返回 SSE 流
+        """
+
+        now = datetime.now(timezone.utc)
+        is_new_session = body.session_id is None
+
+        existing_session: Optional[Session] = None
+        final_cwd: str
+
+        if is_new_session:
+            if not body.cwd:
+                raise HTTPException(
+                    status_code=400,
+                    detail="cwd is required when starting a new session",
+                )
+            if not Path(body.cwd).is_dir():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"cwd does not exist or is not a directory: {body.cwd}",
+                )
+            final_cwd = str(Path(body.cwd).resolve())
+        else:
+            assert body.session_id is not None
+            existing_session = fetch_session(body.session_id, include_messages=False)
+            if not existing_session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if body.cwd and Path(body.cwd).resolve() != Path(
+                existing_session.cwd
+            ).resolve():
+                raise HTTPException(
+                    status_code=400,
+                    detail="cwd mismatch for existing session",
+                )
+            final_cwd = existing_session.cwd
+
+        async def event_stream():
+            session_id: Optional[str] = body.session_id
+            assistant_chunks: List[str] = []
+            user_message_text = body.message
+
+            try:
+                options = ClaudeAgentOptions(
+                    resume=body.session_id,
+                    cwd=final_cwd,
+                    include_partial_messages=True,
+                    setting_sources=["user"],
+                    permission_mode=body.permission_mode,
+                )
+
+                async for message in query(prompt=user_message_text, options=options):
+                    if isinstance(message, SystemMessage):
+                        raw_payload = _dump_sdk_message(message)
+                        if raw_payload is not None:
+                            _log_sdk_message(type(message).__name__, raw_payload)
+                            payload_session_id = (
+                                raw_payload.get("session_id") or session_id
+                            )
+                            yield format_sse(
+                                "message",
+                                {
+                                    "session_id": payload_session_id,
+                                    "payload": raw_payload,
+                                },
+                            )
+                        else:
+                            _log_sdk_message(
+                                type(message).__name__,
+                                {"__repr__": repr(message)},
+                            )
+                        if message.subtype == "init":
+                            if session_id is None:
+                                session_id = message.data.get("session_id")
+                                yield format_sse(
+                                    "session",
+                                    {
+                                        "session_id": session_id,
+                                        "cwd": final_cwd,
+                                        "is_new": True,
+                                    },
+                                )
+                            else:
+                                yield format_sse(
+                                    "session",
+                                    {
+                                        "session_id": session_id,
+                                        "cwd": final_cwd,
+                                        "is_new": False,
+                                    },
+                                )
+
+                    if isinstance(message, AssistantMessage):
+                        raw_payload = _dump_sdk_message(message)
+                        if raw_payload is not None:
+                            _log_sdk_message(type(message).__name__, raw_payload)
+                            payload_session_id = raw_payload.get("session_id") or session_id
+                            yield format_sse(
+                                "message",
+                                {
+                                    "session_id": payload_session_id,
+                                    "payload": raw_payload,
+                                },
+                            )
+                        else:
+                            _log_sdk_message(
+                                type(message).__name__,
+                                {"__repr__": repr(message)},
+                            )
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                chunk = block.text
+                                if not chunk:
+                                    continue
+                                assistant_chunks.append(chunk)
+                                yield format_sse(
+                                    "token",
+                                    {
+                                        "session_id": session_id,
+                                        "text": chunk,
+                                    },
+                                )
+
+                    if isinstance(message, ResultMessage):
+                        raw_payload = _dump_sdk_message(message)
+                        if raw_payload is not None:
+                            _log_sdk_message(type(message).__name__, raw_payload)
+                            payload_session_id = raw_payload.get("session_id") or session_id
+                            yield format_sse(
+                                "message",
+                                {
+                                    "session_id": payload_session_id,
+                                    "payload": raw_payload,
+                                },
+                            )
+                        else:
+                            _log_sdk_message(
+                                type(message).__name__,
+                                {"__repr__": repr(message)},
+                            )
+                        if session_id is None:
+                            session_id = message.session_id
+                            yield format_sse(
+                                "session",
+                                {
+                                    "session_id": session_id,
+                                    "cwd": final_cwd,
+                                    "is_new": is_new_session,
+                                },
+                            )
+
+                        if message.result is not None and not assistant_chunks:
+                            assistant_chunks.append(message.result)
+
+                if session_id is None:
+                    raise RuntimeError("Claude did not return session_id")
+
+                full_assistant_text = "".join(assistant_chunks)
+
+                if existing_session is None:
+                    title = user_message_text.strip() or "新会话"
+                    if len(title) > 30:
+                        title = title[:30] + "..."
+                else:
+                    title = existing_session.title
+
+                persist_session_metadata(
+                    session_id=session_id,
+                    title=title,
+                    cwd=final_cwd,
+                    created_at=now,
+                    updated_at=now,
+                )
+
+                yield format_sse(
+                    "done",
+                    {
+                        "session_id": session_id,
+                        "cwd": final_cwd,
+                        "length": len(full_assistant_text),
+                    },
+                )
+
+            except Exception as exc:
+                yield format_sse(
+                    "error",
+                    {
+                        "message": str(exc),
+                    },
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return app
