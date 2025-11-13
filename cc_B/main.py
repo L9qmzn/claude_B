@@ -5,10 +5,10 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import yaml
 
@@ -23,6 +23,9 @@ from claude_agent_sdk import (
     SystemMessage,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+    ThinkingBlock,
 )
 
 app = FastAPI(title="Claude Agent SDK Chat Backend (Streaming + Sessions + CWD)")
@@ -32,19 +35,13 @@ app = FastAPI(title="Claude Agent SDK Chat Backend (Streaming + Sessions + CWD)"
 # =========================
 
 
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-    timestamp: datetime
-
-
 class Session(BaseModel):
     session_id: str
     title: str
     cwd: str
     created_at: datetime
     updated_at: datetime
-    messages: List[ChatMessage] = Field(default_factory=list)
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 @dataclass
@@ -213,7 +210,136 @@ def _render_message_content(raw_content: object) -> str:
     return str(raw_content)
 
 
-def _iter_session_messages(cwd: str, session_id: str) -> Iterator[ChatMessage]:
+def _jsonify(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonify(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonify(item) for item in value]
+    if is_dataclass(value):
+        return _jsonify(asdict(value))
+    if hasattr(value, "__dict__"):
+        data = {
+            key: val
+            for key, val in vars(value).items()
+            if not key.startswith("_")
+        }
+        if data:
+            return {key: _jsonify(val) for key, val in data.items()}
+    return str(value)
+
+
+def _serialize_content_block(block: Any) -> Dict[str, Any]:
+    if isinstance(block, TextBlock):
+        return {"type": "text", "text": block.text}
+    if isinstance(block, ThinkingBlock):
+        return {
+            "type": "thinking",
+            "thinking": block.thinking,
+            "signature": block.signature,
+        }
+    if isinstance(block, ToolUseBlock):
+        return {
+            "type": "tool_use",
+            "id": block.id,
+            "name": block.name,
+            "input": _jsonify(block.input),
+        }
+    if isinstance(block, ToolResultBlock):
+        payload: Dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": block.tool_use_id,
+        }
+        if block.content is not None:
+            payload["content"] = _jsonify(block.content)
+        if block.is_error is not None:
+            payload["is_error"] = block.is_error
+        return payload
+    if isinstance(block, dict):
+        return {str(key): _jsonify(val) for key, val in block.items()}
+    serialized = _jsonify(block)
+    if isinstance(serialized, dict):
+        return serialized
+    return {
+        "type": "unknown",
+        "value": serialized,
+    }
+
+
+def _serialize_sdk_message(message: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(message, SystemMessage):
+        payload: Dict[str, Any] = {
+            "type": "system",
+            "subtype": message.subtype,
+            "data": _jsonify(message.data),
+        }
+        session_id = message.data.get("session_id")
+        if isinstance(session_id, str):
+            payload["session_id"] = session_id
+        return payload
+
+    if isinstance(message, AssistantMessage):
+        payload: Dict[str, Any] = {
+            "type": "assistant",
+            "model": message.model,
+            "content": [_serialize_content_block(block) for block in message.content],
+        }
+        if message.parent_tool_use_id is not None:
+            payload["parent_tool_use_id"] = message.parent_tool_use_id
+        return payload
+
+    if isinstance(message, ResultMessage):
+        payload: Dict[str, Any] = {
+            "type": "result",
+            "subtype": message.subtype,
+            "duration_ms": message.duration_ms,
+            "duration_api_ms": message.duration_api_ms,
+            "is_error": message.is_error,
+            "num_turns": message.num_turns,
+            "session_id": message.session_id,
+        }
+        if message.total_cost_usd is not None:
+            payload["total_cost_usd"] = message.total_cost_usd
+        if message.usage is not None:
+            payload["usage"] = _jsonify(message.usage)
+        if message.result is not None:
+            payload["result"] = message.result
+        return payload
+
+    if isinstance(message, dict):
+        return {str(key): _jsonify(val) for key, val in message.items()}
+
+    return None
+
+
+def _dump_sdk_message(message: Any) -> Optional[Dict[str, Any]]:
+    payload = _serialize_sdk_message(message)
+    if payload is not None:
+        return payload
+
+    serialized = _jsonify(message)
+    if isinstance(serialized, dict):
+        return serialized
+
+    if serialized is not None:
+        return {
+            "type": type(message).__name__,
+            "value": serialized,
+        }
+
+    return None
+
+
+def _log_sdk_message(label: str, payload: Dict[str, Any]) -> None:
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception:
+        serialized = str(payload)
+    print(f"[ClaudeSDK:{label}]\n{serialized}\n", flush=True)
+
+
+def _iter_session_records(cwd: str, session_id: str) -> Iterator[Dict[str, Any]]:
     path = _session_file_path(cwd, session_id)
     if not path.exists():
         return
@@ -228,29 +354,25 @@ def _iter_session_messages(cwd: str, session_id: str) -> Iterator[ChatMessage]:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-
-                if record.get("type") not in {"user", "assistant"}:
-                    continue
-
-                message = record.get("message") or {}
-                role = message.get("role")
-                if role not in ("user", "assistant"):
-                    continue
-
-                content = _render_message_content(message.get("content"))
-                timestamp = _parse_iso_timestamp(record.get("timestamp"))
-
-                yield ChatMessage(role=role, content=content, timestamp=timestamp)
+                yield record
     except OSError:
         return
 
 
-def load_session_messages_from_jsonl(cwd: str, session_id: str) -> List[ChatMessage]:
-    return list(_iter_session_messages(cwd, session_id))
+def load_session_messages_from_jsonl(cwd: str, session_id: str) -> List[Dict[str, Any]]:
+    return list(_iter_session_records(cwd, session_id))
 
 
 def count_session_messages(cwd: str, session_id: str) -> int:
-    return sum(1 for _ in _iter_session_messages(cwd, session_id))
+    count = 0
+    for record in _iter_session_records(cwd, session_id) or []:
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role in ("user", "assistant"):
+            count += 1
+    return count
 
 
 def _is_agent_session_file(path: Path) -> bool:
@@ -361,7 +483,7 @@ def fetch_session(session_id: str, include_messages: bool = True) -> Optional[Se
         if row is None:
             return None
 
-        messages: List[ChatMessage] = []
+        messages: List[Dict[str, Any]] = []
         if include_messages:
             messages = load_session_messages_from_jsonl(
                 row["cwd"], row["session_id"]
@@ -711,6 +833,22 @@ async def chat(body: ChatRequest):
             async for message in query(prompt=user_message_text, options=options):
                 # SystemMessage(subtype="init") 里通常带 cwd / session_id / tools 等元数据:contentReference[oaicite:3]{index=3}
                 if isinstance(message, SystemMessage):
+                    raw_payload = _dump_sdk_message(message)
+                    if raw_payload is not None:
+                        _log_sdk_message(type(message).__name__, raw_payload)
+                        payload_session_id = raw_payload.get("session_id") or session_id
+                        yield format_sse(
+                            "message",
+                            {
+                                "session_id": payload_session_id,
+                                "payload": raw_payload,
+                            },
+                        )
+                    else:
+                        _log_sdk_message(
+                            type(message).__name__,
+                            {"__repr__": repr(message)},
+                        )
                     if message.subtype == "init":
                         # 新会话时，从 data 里拿 session_id
                         if session_id is None:
@@ -738,6 +876,22 @@ async def chat(body: ChatRequest):
 
                 # 助手文本块（可能有多条 / partial updates）
                 if isinstance(message, AssistantMessage):
+                    raw_payload = _dump_sdk_message(message)
+                    if raw_payload is not None:
+                        _log_sdk_message(type(message).__name__, raw_payload)
+                        payload_session_id = raw_payload.get("session_id") or session_id
+                        yield format_sse(
+                            "message",
+                            {
+                                "session_id": payload_session_id,
+                                "payload": raw_payload,
+                            },
+                        )
+                    else:
+                        _log_sdk_message(
+                            type(message).__name__,
+                            {"__repr__": repr(message)},
+                        )
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             chunk = block.text
@@ -756,6 +910,22 @@ async def chat(body: ChatRequest):
 
                 # ResultMessage 是最终结果 + 使用情况 + session_id:contentReference[oaicite:4]{index=4}
                 if isinstance(message, ResultMessage):
+                    raw_payload = _dump_sdk_message(message)
+                    if raw_payload is not None:
+                        _log_sdk_message(type(message).__name__, raw_payload)
+                        payload_session_id = raw_payload.get("session_id") or session_id
+                        yield format_sse(
+                            "message",
+                            {
+                                "session_id": payload_session_id,
+                                "payload": raw_payload,
+                            },
+                        )
+                    else:
+                        _log_sdk_message(
+                            type(message).__name__,
+                            {"__repr__": repr(message)},
+                        )
                     # 确认最终 session_id
                     if session_id is None:
                         session_id = message.session_id
