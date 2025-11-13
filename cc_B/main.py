@@ -484,26 +484,46 @@ def bootstrap_sessions_from_files(claude_dir: Optional[str] = None) -> Dict[str,
 
     stats = {"sessions": 0, "agent_runs": 0}
 
+    primary_sessions: List[SessionFileMetadata] = []
+    agent_sessions: List[SessionFileMetadata] = []
+
     for metadata in _discover_session_metadata_from_files(root):
         if metadata.is_agent_run:
-            persist_agent_session_metadata(
-                agent_id=metadata.session_id,
-                parent_session_id=metadata.parent_session_id,
-                title=metadata.title,
-                cwd=metadata.cwd,
-                created_at=metadata.created_at,
-                updated_at=metadata.updated_at,
-            )
-            stats["agent_runs"] += 1
+            agent_sessions.append(metadata)
         else:
-            persist_session_metadata(
-                session_id=metadata.session_id,
-                title=metadata.title,
-                cwd=metadata.cwd,
-                created_at=metadata.created_at,
-                updated_at=metadata.updated_at,
-            )
-            stats["sessions"] += 1
+            primary_sessions.append(metadata)
+
+    existing_session_ids: set[str] = set()
+    with db_connection() as conn:
+        rows = conn.execute("SELECT session_id FROM sessions").fetchall()
+        existing_session_ids.update(row["session_id"] for row in rows)
+
+    for metadata in primary_sessions:
+        persist_session_metadata(
+            session_id=metadata.session_id,
+            title=metadata.title,
+            cwd=metadata.cwd,
+            created_at=metadata.created_at,
+            updated_at=metadata.updated_at,
+        )
+        stats["sessions"] += 1
+        existing_session_ids.add(metadata.session_id)
+
+    for metadata in agent_sessions:
+        parent_session_id = (
+            metadata.parent_session_id
+            if metadata.parent_session_id in existing_session_ids
+            else None
+        )
+        persist_agent_session_metadata(
+            agent_id=metadata.session_id,
+            parent_session_id=parent_session_id,
+            title=metadata.title,
+            cwd=metadata.cwd,
+            created_at=metadata.created_at,
+            updated_at=metadata.updated_at,
+        )
+        stats["agent_runs"] += 1
 
     return stats
 
