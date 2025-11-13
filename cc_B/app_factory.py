@@ -111,6 +111,9 @@ def create_app() -> FastAPI:
             session_id: Optional[str] = body.session_id
             assistant_chunks: List[str] = []
             user_message_text = body.message
+            new_session_title = user_message_text.strip() or "新会话"
+            if len(new_session_title) > 30:
+                new_session_title = new_session_title[:30] + "..."
 
             try:
                 options = ClaudeAgentOptions(
@@ -144,6 +147,14 @@ def create_app() -> FastAPI:
                         if message.subtype == "init":
                             if session_id is None:
                                 session_id = message.data.get("session_id")
+                                if session_id is not None and is_new_session:
+                                    persist_session_metadata(
+                                        session_id=session_id,
+                                        title=new_session_title,
+                                        cwd=final_cwd,
+                                        created_at=now,
+                                        updated_at=now,
+                                    )
                                 yield format_sse(
                                     "session",
                                     {
@@ -230,9 +241,7 @@ def create_app() -> FastAPI:
                 full_assistant_text = "".join(assistant_chunks)
 
                 if existing_session is None:
-                    title = user_message_text.strip() or "新会话"
-                    if len(title) > 30:
-                        title = title[:30] + "..."
+                    title = new_session_title
                 else:
                     title = existing_session.title
 
