@@ -111,6 +111,7 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
   port: 8207
   ```
   - `claude_dir`：Claude Code 项目的根目录（包含 `projects/`）。
+    如果此字段为空，服务会根据操作系统自动寻找 Claude 安装目录，优先使用 `~/.claude`。
   - `sessions_db`：SQLite 文件路径，支持绝对或相对路径。
   - `port`：FastAPI 服务监听端口，`start_server.ps1` 会读取此配置。
 
