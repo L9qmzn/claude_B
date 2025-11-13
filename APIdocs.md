@@ -19,6 +19,8 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
     "message": "继续对话"
   }
   ```
+- **参数说明**：
+  - `permission_mode`（可选，默认 `default`）：可取 `default` / `plan` / `acceptEdits` / `bypassPermissions`，用于透传到 ClaudeAgentOptions.permission_mode，实现权限或工具调用策略控制。
 - **响应**：`text/event-stream`，事件类型包含：
   - `session`：返回 `session_id`、`cwd`、`is_new`。
   - `token`：助手增量文本块（便于前端逐字渲染）。

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Literal
 
 import yaml
 
@@ -673,6 +673,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     cwd: Optional[str] = None
     message: str
+    permission_mode: Literal["default", "plan", "acceptEdits", "bypassPermissions"] = "default"
 
 
 class SessionSummary(BaseModel):
@@ -827,6 +828,7 @@ async def chat(body: ChatRequest):
                 cwd=final_cwd,
                 include_partial_messages=True,  # 尽量细粒度流式输出:contentReference[oaicite:2]{index=2}
                 setting_sources=["user"],
+                permission_mode=body.permission_mode,
             )
 
             # 调用 Agent SDK，单轮 query 返回 AsyncIterator[Message]
