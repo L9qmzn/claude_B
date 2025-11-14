@@ -2,6 +2,12 @@
 
 FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调整端口）。以下文档说明所有公开接口及其输入输出格式。
 
+## 鉴权
+
+- 所有 HTTP 接口均要求使用 **HTTP Basic Auth**，用户名/密码来源于 `config.yaml` 的 `users` 配置。
+- 如果未在配置中声明，则默认存在 `admin` 用户，密码为 `642531`。
+- 客户端应在请求头里携带 `Authorization: Basic <base64(username:password)>`，否则会返回 `401 Unauthorized`。
+
 ## 1. `POST /chat`
 
 - **功能**：与 Claude Agent SDK 建立流式（SSE）对话。
@@ -91,15 +97,42 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
   claude_dir: C:/Users/11988/.claude
   sessions_db: ./sessions.db
   port: 8207
+  users:
+    admin: 642531
+    alice: mypassword
   ```
   - `claude_dir`：Claude Code 项目根目录（含 `projects/`）；为空时会自动探测，优先 `~/.claude`。
   - `sessions_db`：SQLite 文件路径，支持绝对或相对路径。
   - `port`：FastAPI 服务监听端口，`start_server.ps1` 同步读取。
+  - `users`：用户名到明文密码的映射；若未提供则默认仅存在 `admin/642531`。配置多名用户时，每个用户都可各自管理自己的全局设置。
 - 数据库表：
   - `sessions`：主会话（`session_id`、`title`、`cwd`、`created_at`、`updated_at`）。
   - `agent_sessions`：子 Agent 会话（`agent_id`、`parent_session_id`、`title`、`cwd`、时间戳）。
 
-## 6. CLI 辅助脚本
+## 6. `GET /users/{user_id}/settings` 与 `PUT /users/{user_id}/settings`
+
+- **功能**：读写某个用户的全局偏好（当前包含 `permission_mode`、`system_prompt`）。
+- **认证**：路径中的 `user_id` 必须与认证用户相同，否则会返回 403。
+- **GET 响应**：
+  ```json
+  {
+    "user_id": "someone",
+    "permission_mode": "default",
+    "system_prompt": { "type": "preset", "preset": "claude_code" }
+  }
+  ```
+  若该用户尚未保存任何内容，接口仍会返回默认值，方便前端提前填充表单。
+- **PUT 请求/响应**：
+  ```json
+  {
+    "permission_mode": "plan",
+    "system_prompt": "You are a helpful assistant"
+  }
+  ```
+  PUT 会覆盖整条记录，返回最新的 `user_id` + 请求体字段。`system_prompt` 可为字符串或任意可序列化 JSON 对象。
+- **数据存储**：新增 `user_settings` 表，字段：`user_id`（主键）、`permission_mode`、`system_prompt`（JSON 字符串）。
+
+## 7. CLI 辅助脚本
 
 - `cc_B/read_session.py`：读取 JSONL，输出指定会话的原始记录。
 - `cc_B/test_read_session_api.py`：调用 `/sessions` 相关接口做冒烟测试。

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from claude_agent_sdk import (
     query,
@@ -16,9 +18,16 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from .config import CLAUDE_ROOT
+from .config import CLAUDE_ROOT, USER_CREDENTIALS
 from .database import init_db
-from .models import ChatRequest, LoadSessionsRequest, Session, SessionSummary
+from .models import (
+    ChatRequest,
+    LoadSessionsRequest,
+    Session,
+    SessionSummary,
+    UserSettings,
+    UserSettingsRequest,
+)
 from .session_store import (
     bootstrap_sessions_from_files,
     fetch_session,
@@ -26,6 +35,23 @@ from .session_store import (
     persist_session_metadata,
 )
 from .streaming import _dump_sdk_message, _log_sdk_message, format_sse
+from .user_settings_store import fetch_user_settings, upsert_user_settings
+
+
+_http_basic = HTTPBasic()
+
+
+def _require_user(credentials: HTTPBasicCredentials = Depends(_http_basic)) -> str:
+    username = credentials.username or ""
+    password = credentials.password or ""
+    stored_password = USER_CREDENTIALS.get(username)
+    if not stored_password or not secrets.compare_digest(password, stored_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return username
 
 
 def _extract_session_id_from_payload(payload: Any) -> Optional[str]:
@@ -64,14 +90,18 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Claude Agent SDK Chat Backend (Streaming + Sessions + CWD)")
 
     @app.get("/sessions", response_model=List[SessionSummary])
-    async def list_sessions_route() -> List[SessionSummary]:
+    async def list_sessions_route(
+        _current_user: str = Depends(_require_user),
+    ) -> List[SessionSummary]:
         """
         列出当前进程里所有已知会话（包含 cwd）
         """
         return list_session_summaries()
 
     @app.get("/sessions/{session_id}", response_model=Session)
-    async def get_session_route(session_id: str) -> Session:
+    async def get_session_route(
+        session_id: str, _current_user: str = Depends(_require_user)
+    ) -> Session:
         """
         返回某个会话的详细信息（包含 cwd 和历史消息）
         """
@@ -81,7 +111,9 @@ def create_app() -> FastAPI:
         return sess
 
     @app.post("/sessions/load")
-    async def load_sessions_route(body: LoadSessionsRequest):
+    async def load_sessions_route(
+        body: LoadSessionsRequest, _current_user: str = Depends(_require_user)
+    ):
         try:
             stats = bootstrap_sessions_from_files(body.claude_dir)
         except FileNotFoundError as exc:
@@ -97,8 +129,36 @@ def create_app() -> FastAPI:
             "agent_runs_loaded": stats["agent_runs"],
         }
 
+    @app.get("/users/{user_id}/settings", response_model=UserSettings)
+    async def get_user_settings_route(
+        user_id: str, current_user: str = Depends(_require_user)
+    ) -> UserSettings:
+        if current_user != user_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        settings = fetch_user_settings(user_id)
+        if settings is None:
+            return UserSettings(user_id=user_id)
+        return settings
+
+    @app.put("/users/{user_id}/settings", response_model=UserSettings)
+    async def upsert_user_settings_route(
+        user_id: str,
+        body: UserSettingsRequest,
+        current_user: str = Depends(_require_user),
+    ) -> UserSettings:
+        if current_user != user_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return upsert_user_settings(
+            user_id=user_id,
+            permission_mode=body.permission_mode,
+            system_prompt=body.system_prompt,
+        )
+
     @app.post("/chat")
-    async def chat_route(body: ChatRequest):
+    async def chat_route(
+        body: ChatRequest,
+        _current_user: str = Depends(_require_user),
+    ):
         """
         核心流式聊天接口，返回 SSE 流
         """

@@ -46,3 +46,12 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id TEXT PRIMARY KEY,
+                permission_mode TEXT NOT NULL,
+                system_prompt TEXT
+            )
+            """
+        )

@@ -50,3 +50,12 @@ class SessionSummary(BaseModel):
 
 class LoadSessionsRequest(BaseModel):
     claude_dir: Optional[str] = None
+
+
+class UserSettingsRequest(BaseModel):
+    permission_mode: Literal["default", "plan", "acceptEdits", "bypassPermissions"] = "default"
+    system_prompt: str | Dict[str, Any] | None = Field(default_factory=_default_system_prompt)
+
+
+class UserSettings(UserSettingsRequest):
+    user_id: str

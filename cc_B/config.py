@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+DEFAULT_USER_CREDENTIALS = {"admin": "642531"}
 
 
 def _iter_candidate_claude_dirs():
@@ -58,10 +59,11 @@ def _detect_claude_dir() -> Path:
     return fallback
 
 
-def load_app_config() -> Dict[str, str]:
+def load_app_config() -> Dict[str, Any]:
     defaults = {
         "claude_dir": "",
         "sessions_db": str(PROJECT_ROOT / "sessions.db"),
+        "users": DEFAULT_USER_CREDENTIALS.copy(),
     }
 
     try:
@@ -77,7 +79,19 @@ def load_app_config() -> Dict[str, str]:
 
     config = defaults.copy()
     for key, value in data.items():
-        if isinstance(key, str) and isinstance(value, str) and value.strip():
+        if not isinstance(key, str):
+            continue
+        if key == "users" and isinstance(value, dict):
+            sanitized: Dict[str, str] = {}
+            for username, password in value.items():
+                if isinstance(username, str) and isinstance(password, str):
+                    normalized = username.strip()
+                    if normalized:
+                        sanitized[normalized] = password
+            if sanitized:
+                config["users"] = sanitized
+            continue
+        if isinstance(value, str) and value.strip():
             config[key] = value.strip()
 
     if not config.get("claude_dir"):
@@ -93,3 +107,4 @@ _db_path = Path(CONFIG["sessions_db"])
 if not _db_path.is_absolute():
     _db_path = (CONFIG_PATH.parent / _db_path).resolve()
 DB_PATH = _db_path
+USER_CREDENTIALS = CONFIG["users"]

@@ -1,3 +1,5 @@
 claude_dir: # 默认为～/.claude
 sessions_db: ./sessions.db
 port: 8207
+users:
+  admin: 642531
