@@ -8,7 +8,7 @@
 #>
 
 param(
-    [string]$Host = "0.0.0.0",
+    [string]$BindHost = "0.0.0.0",
     [Nullable[int]]$Port,
     [switch]$Reload
 )
@@ -181,7 +181,7 @@ $Port = $resolvedPort
 $uvicornArgs = @(
     "-m", "uvicorn",
     "cc_B.main:app",
-    "--host", $Host,
+    "--host", $BindHost,
     "--port", $Port
 )
 
@@ -189,7 +189,7 @@ if ($Reload.IsPresent) {
     $uvicornArgs += "--reload"
 }
 
-$baseUrls = @("http://{0}:{1}" -f $Host, $Port)
+$baseUrls = @("http://{0}:{1}" -f $BindHost, $Port)
 $lanUrls = Get-LocalBaseUrls -Port $Port
 foreach ($url in $lanUrls) {
     if ($baseUrls -notcontains $url) {
@@ -200,10 +200,10 @@ foreach ($url in $lanUrls) {
 Write-Host ""
 Write-Host "================ Claude Backend Launcher ================" -ForegroundColor Cyan
 Write-Host "Python :" $pythonExe
-Write-Host "Host   :" $Host
+Write-Host "Host   :" $BindHost
 Write-Host "Port   :" $Port
 Write-Host "Reload :" ($(if ($Reload.IsPresent) { "On" } else { "Off" }))
-Write-Host "Config :" ($(if ($configData.Count) { "已加载" } else { "未检测到" }))
+Write-Host "Config :" ($(if ($configData.Count) { "loaded" } else { "missing" }))
 Write-Host ""
 Write-Host "Base URL(s):" -ForegroundColor Yellow
 foreach ($url in $baseUrls) {
