@@ -42,51 +42,6 @@ def _session_file_path(cwd: str, session_id: str) -> Path:
     return CLAUDE_PROJECTS_DIR / slug / f"{session_id}.jsonl"
 
 
-def _render_message_content(raw_content: object) -> str:
-    if isinstance(raw_content, str):
-        return raw_content
-
-    if isinstance(raw_content, list):
-        parts: List[str] = []
-        for item in raw_content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-
-            if isinstance(item, dict):
-                item_type = item.get("type")
-                if item_type == "text":
-                    parts.append(item.get("text", ""))
-                elif item_type == "tool_use":
-                    name = item.get("name", "tool")
-                    payload = json.dumps(item.get("input"), ensure_ascii=False)
-                    parts.append(f"[tool_use:{name}] {payload}")
-                elif item_type == "tool_result":
-                    content = item.get("content")
-                    if isinstance(content, list):
-                        parts.append("\n".join(str(child) for child in content))
-                    elif content is not None:
-                        parts.append(f"[tool_result] {content}")
-                    else:
-                        parts.append(json.dumps(item, ensure_ascii=False))
-                else:
-                    parts.append(json.dumps(item, ensure_ascii=False))
-            else:
-                parts.append(str(item))
-
-        return "\n".join(part for part in parts if part)
-
-    if isinstance(raw_content, dict):
-        if raw_content.get("type") == "text":
-            return raw_content.get("text", "")
-        return json.dumps(raw_content, ensure_ascii=False)
-
-    if raw_content is None:
-        return ""
-
-    return str(raw_content)
-
-
 def load_session_messages_from_jsonl(cwd: str, session_id: str) -> List[Dict[str, Any]]:
     path = _session_file_path(cwd, session_id)
     if not path.exists():
@@ -103,20 +58,7 @@ def load_session_messages_from_jsonl(cwd: str, session_id: str) -> List[Dict[str
             except json.JSONDecodeError:
                 continue
 
-            role = record.get("role", "assistant")
-            timestamp = record.get("timestamp") or record.get("created_at")
-            content = record.get("content") or record.get("message")
-            messages.append(
-                {
-                    "type": "assistant" if role == "assistant" else "user",
-                    "timestamp": timestamp,
-                    "message": {
-                        "role": role,
-                        "content": content,
-                        "rendered": _render_message_content(content),
-                    },
-                }
-            )
+            messages.append(record)
 
     return messages
 

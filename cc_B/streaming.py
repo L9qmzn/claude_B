@@ -12,7 +12,13 @@ from claude_agent_sdk import (
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
 )
+
+try:
+    from claude_agent_sdk.types import StreamEvent as _StreamEventType
+except ImportError:  # pragma: no cover - fallback for older SDKs
+    _StreamEventType = None
 
 
 def format_sse(event: str, data: dict) -> str:
@@ -78,6 +84,20 @@ def _serialize_content_block(block: Any) -> Dict[str, Any]:
 
 
 def _serialize_sdk_message(message: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(message, UserMessage):
+        payload: Dict[str, Any] = {
+            "type": "user",
+        }
+        if isinstance(message.content, list):
+            payload["content"] = [
+                _serialize_content_block(block) for block in message.content
+            ]
+        else:
+            payload["content"] = message.content
+        if message.parent_tool_use_id is not None:
+            payload["parent_tool_use_id"] = message.parent_tool_use_id
+        return payload
+
     if isinstance(message, SystemMessage):
         payload: Dict[str, Any] = {
             "type": "system",
@@ -115,6 +135,17 @@ def _serialize_sdk_message(message: Any) -> Optional[Dict[str, Any]]:
             payload["usage"] = _jsonify(message.usage)
         if message.result is not None:
             payload["result"] = message.result
+        return payload
+
+    if _StreamEventType is not None and isinstance(message, _StreamEventType):
+        payload = {
+            "type": "stream_event",
+            "uuid": message.uuid,
+            "session_id": message.session_id,
+            "event": _jsonify(message.event),
+        }
+        if message.parent_tool_use_id is not None:
+            payload["parent_tool_use_id"] = message.parent_tool_use_id
         return payload
 
     if isinstance(message, dict):

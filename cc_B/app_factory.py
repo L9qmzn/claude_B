@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -26,6 +26,35 @@ from .session_store import (
     persist_session_metadata,
 )
 from .streaming import _dump_sdk_message, _log_sdk_message, format_sse
+
+
+def _extract_session_id_from_payload(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    stack: List[Dict[str, Any]] = [payload]
+    seen: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+
+        value = current.get("session_id") or current.get("sessionId")
+        if isinstance(value, str) and value:
+            return value
+
+        for child in current.values():
+            if isinstance(child, dict):
+                stack.append(child)
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, dict):
+                        stack.append(item)
+
+    return None
 
 
 def create_app() -> FastAPI:
@@ -126,25 +155,16 @@ def create_app() -> FastAPI:
                 )
 
                 async for message in query(prompt=user_message_text, options=options):
+                    raw_payload = _dump_sdk_message(message)
+                    if raw_payload is not None:
+                        _log_sdk_message(type(message).__name__, raw_payload)
+                    else:
+                        _log_sdk_message(
+                            type(message).__name__,
+                            {"__repr__": repr(message)},
+                        )
+
                     if isinstance(message, SystemMessage):
-                        raw_payload = _dump_sdk_message(message)
-                        if raw_payload is not None:
-                            _log_sdk_message(type(message).__name__, raw_payload)
-                            payload_session_id = (
-                                raw_payload.get("session_id") or session_id
-                            )
-                            yield format_sse(
-                                "message",
-                                {
-                                    "session_id": payload_session_id,
-                                    "payload": raw_payload,
-                                },
-                            )
-                        else:
-                            _log_sdk_message(
-                                type(message).__name__,
-                                {"__repr__": repr(message)},
-                            )
                         if message.subtype == "init":
                             if session_id is None:
                                 session_id = message.data.get("session_id")
@@ -175,22 +195,6 @@ def create_app() -> FastAPI:
                                 )
 
                     if isinstance(message, AssistantMessage):
-                        raw_payload = _dump_sdk_message(message)
-                        if raw_payload is not None:
-                            _log_sdk_message(type(message).__name__, raw_payload)
-                            payload_session_id = raw_payload.get("session_id") or session_id
-                            yield format_sse(
-                                "message",
-                                {
-                                    "session_id": payload_session_id,
-                                    "payload": raw_payload,
-                                },
-                            )
-                        else:
-                            _log_sdk_message(
-                                type(message).__name__,
-                                {"__repr__": repr(message)},
-                            )
                         for block in message.content:
                             if isinstance(block, TextBlock):
                                 chunk = block.text
@@ -206,22 +210,6 @@ def create_app() -> FastAPI:
                                 )
 
                     if isinstance(message, ResultMessage):
-                        raw_payload = _dump_sdk_message(message)
-                        if raw_payload is not None:
-                            _log_sdk_message(type(message).__name__, raw_payload)
-                            payload_session_id = raw_payload.get("session_id") or session_id
-                            yield format_sse(
-                                "message",
-                                {
-                                    "session_id": payload_session_id,
-                                    "payload": raw_payload,
-                                },
-                            )
-                        else:
-                            _log_sdk_message(
-                                type(message).__name__,
-                                {"__repr__": repr(message)},
-                            )
                         if session_id is None:
                             session_id = message.session_id
                             yield format_sse(
@@ -235,6 +223,20 @@ def create_app() -> FastAPI:
 
                         if message.result is not None and not assistant_chunks:
                             assistant_chunks.append(message.result)
+
+                    if raw_payload is not None:
+                        payload_session_id = (
+                            _extract_session_id_from_payload(raw_payload) or session_id
+                        )
+                        if session_id is None and payload_session_id is not None:
+                            session_id = payload_session_id
+                        yield format_sse(
+                            "message",
+                            {
+                                "session_id": payload_session_id,
+                                "payload": raw_payload,
+                            },
+                        )
 
                 if session_id is None:
                     raise RuntimeError("Claude did not return session_id")
