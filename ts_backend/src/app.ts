@@ -655,7 +655,7 @@ export function createApp(): express.Express {
     }
 
     const userSettings =
-      req.userId !== undefined ? fetchCodexUserSettings(req.userId) ?? defaultCodexUserSettings(req.userId) : null;
+      req.userId !== undefined ? fetchCodexUserSettings(req.userId) : null;
     const mergedRequest: CodexChatRequest = {
       ...body,
       approval_policy: body.approval_policy ?? userSettings?.approval_policy,
@@ -681,7 +681,7 @@ export function createApp(): express.Express {
     const threadOptions = buildCodexThreadOptions(mergedRequest, finalCwd);
 
     let streamClosed = false;
-    req.on("close", () => {
+    res.on("close", () => {
       streamClosed = true;
     });
 
@@ -691,6 +691,10 @@ export function createApp(): express.Express {
         const thread = isNewSession
           ? codex.startThread(threadOptions)
           : codex.resumeThread(sessionId!, threadOptions);
+        const resolveThreadId = () => {
+          const id = thread.id;
+          return typeof id === "string" && id ? id : null;
+        };
 
         if (!isNewSession && sessionId) {
           writeEvent("session", {
@@ -762,7 +766,25 @@ export function createApp(): express.Express {
         }
 
         if (!sessionId) {
-          throw new Error("Codex did not return session_id");
+          sessionId = resolveThreadId();
+          if (sessionId) {
+            if (isNewSessionFlag) {
+              persistCodexSessionMetadata({
+                session_id: sessionId,
+                title: newSessionTitle,
+                cwd: finalCwd,
+                created_at: now,
+                updated_at: now,
+              });
+            }
+            writeEvent("session", {
+              session_id: sessionId,
+              cwd: finalCwd,
+              is_new: isNewSessionFlag,
+            });
+          } else {
+            throw new Error("Codex did not return session_id");
+          }
         }
 
         const title = existingSession ? existingSession.title : newSessionTitle;
