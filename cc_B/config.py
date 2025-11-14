@@ -84,10 +84,20 @@ def load_app_config() -> Dict[str, Any]:
         if key == "users" and isinstance(value, dict):
             sanitized: Dict[str, str] = {}
             for username, password in value.items():
-                if isinstance(username, str) and isinstance(password, str):
-                    normalized = username.strip()
-                    if normalized:
-                        sanitized[normalized] = password
+                if not isinstance(username, str):
+                    continue
+                normalized = username.strip()
+                if not normalized:
+                    continue
+
+                password_str: str | None = None
+                if isinstance(password, str):
+                    password_str = password
+                elif isinstance(password, (int, float, bool)):
+                    password_str = str(password)
+
+                if password_str is not None:
+                    sanitized[normalized] = password_str
             if sanitized:
                 config["users"] = sanitized
             continue
