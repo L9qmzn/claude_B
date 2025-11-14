@@ -33,7 +33,16 @@ def _parse_iso_timestamp(value: Optional[str]) -> datetime:
 
 
 def _cwd_to_project_slug(cwd: str) -> str:
-    normalized = str(Path(cwd).resolve())
+    normalized_path = Path(cwd).resolve()
+    try:
+        relative = normalized_path.relative_to(CLAUDE_PROJECTS_DIR)
+    except ValueError:
+        pass
+    else:
+        parts = relative.parts
+        if parts:
+            return parts[0]
+    normalized = str(normalized_path)
     return re.sub(r"[^0-9A-Za-z]", "-", normalized)
 
 
