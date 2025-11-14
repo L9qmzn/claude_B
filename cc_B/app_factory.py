@@ -122,6 +122,7 @@ def create_app() -> FastAPI:
                     include_partial_messages=True,
                     setting_sources=["user"],
                     permission_mode=body.permission_mode,
+                    system_prompt=body.system_prompt,
                 )
 
                 async for message in query(prompt=user_message_text, options=options):
