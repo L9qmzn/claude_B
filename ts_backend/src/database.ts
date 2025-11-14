@@ -52,6 +52,27 @@ export function initDb(): void {
     )
     `,
   ).run();
+
+  db.prepare(
+    `
+    CREATE TABLE IF NOT EXISTS codex_sessions (
+      session_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+    `,
+  ).run();
+
+  db.prepare(
+    `
+    CREATE TABLE IF NOT EXISTS codex_user_settings (
+      user_id TEXT PRIMARY KEY,
+      settings_json TEXT
+    )
+    `,
+  ).run();
 }
 
 export function getDb(): Database.Database {

@@ -1,3 +1,9 @@
+import type {
+  ApprovalMode,
+  ModelReasoningEffort,
+  SandboxMode,
+} from "@openai/codex-sdk";
+
 export type PermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions";
 
 export type SystemPrompt = string | Record<string, unknown> | null;
@@ -28,6 +34,19 @@ export interface ChatRequest {
   system_prompt?: SystemPrompt;
 }
 
+export interface CodexChatRequest {
+  session_id?: string;
+  cwd?: string;
+  message: string;
+  approval_policy?: ApprovalMode;
+  sandbox_mode?: SandboxMode;
+  skip_git_repo_check?: boolean;
+  model?: string;
+  model_reasoning_effort?: ModelReasoningEffort;
+  network_access_enabled?: boolean;
+  web_search_enabled?: boolean;
+}
+
 export interface LoadSessionsRequest {
   claude_dir?: string;
 }
@@ -38,6 +57,20 @@ export interface UserSettingsRequest {
 }
 
 export interface UserSettings extends UserSettingsRequest {
+  user_id: string;
+}
+
+export interface CodexUserSettingsRequest {
+  approval_policy?: ApprovalMode;
+  sandbox_mode?: SandboxMode;
+  model?: string;
+  model_reasoning_effort?: ModelReasoningEffort;
+  network_access_enabled?: boolean;
+  web_search_enabled?: boolean;
+  skip_git_repo_check?: boolean;
+}
+
+export interface CodexUserSettings extends CodexUserSettingsRequest {
   user_id: string;
 }
 
@@ -53,4 +86,16 @@ export interface SessionFileMetadata {
 
 export function defaultSystemPrompt(): Record<string, string> {
   return { type: "preset", preset: "claude_code" };
+}
+
+export function defaultCodexUserSettings(userId: string): CodexUserSettings {
+  return {
+    user_id: userId,
+    approval_policy: "on-request",
+    sandbox_mode: "read-only",
+    model_reasoning_effort: "medium",
+    network_access_enabled: false,
+    web_search_enabled: false,
+    skip_git_repo_check: false,
+  };
 }

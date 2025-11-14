@@ -10,6 +10,9 @@ export interface AppConfig {
   sessions_db: string;
   port?: number | string;
   users: UserCredentials;
+  codex_dir?: string;
+  codex_api_key?: string;
+  codex_cli_path?: string;
 }
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -72,11 +75,23 @@ function detectClaudeDir(): string {
   return fallback;
 }
 
+function detectCodexSessionsDir(): string {
+  const envOverride = process.env.CODEX_SESSIONS_DIR;
+  if (envOverride) {
+    return path.resolve(envOverride);
+  }
+  const fallback = path.join(os.homedir(), ".codex", "sessions");
+  return fallback;
+}
+
 export function loadAppConfig(): AppConfig {
   const defaults: AppConfig = {
     claude_dir: "",
     sessions_db: path.join(PROJECT_ROOT, "sessions.db"),
     users: { ...DEFAULT_USER_CREDENTIALS },
+    codex_dir: "",
+    codex_api_key: "",
+    codex_cli_path: "",
   };
 
   let loaded: unknown = {};
@@ -114,6 +129,12 @@ export function loadAppConfig(): AppConfig {
           config.sessions_db = trimmed;
         } else if (key === "port") {
           config.port = trimmed;
+        } else if (key === "codex_dir") {
+          config.codex_dir = trimmed;
+        } else if (key === "codex_api_key") {
+          config.codex_api_key = trimmed;
+        } else if (key === "codex_cli_path") {
+          config.codex_cli_path = trimmed;
         }
       } else if (typeof key === "string" && typeof value === "number" && key === "port") {
         config.port = value;
@@ -125,12 +146,17 @@ export function loadAppConfig(): AppConfig {
     config.claude_dir = detectClaudeDir();
   }
 
+  if (!config.codex_dir) {
+    config.codex_dir = detectCodexSessionsDir();
+  }
+
   return config;
 }
 
 export const CONFIG = loadAppConfig();
 export const CLAUDE_ROOT = path.resolve(CONFIG.claude_dir);
 export const CLAUDE_PROJECTS_DIR = path.join(CLAUDE_ROOT, "projects");
+export const CODEX_SESSIONS_DIR = path.resolve(CONFIG.codex_dir || detectCodexSessionsDir());
 
 const sessionsDb = CONFIG.sessions_db;
 const dbPath = path.isAbsolute(sessionsDb)
@@ -139,3 +165,5 @@ const dbPath = path.isAbsolute(sessionsDb)
 
 export const DB_PATH = dbPath;
 export const USER_CREDENTIALS = CONFIG.users;
+export const CODEX_API_KEY = CONFIG.codex_api_key || process.env.CODEX_API_KEY || "";
+export const CODEX_CLI_PATH = CONFIG.codex_cli_path || process.env.CODEX_CLI_PATH || "";

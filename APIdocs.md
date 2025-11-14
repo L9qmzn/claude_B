@@ -1,48 +1,49 @@
 # API 文档
 
-FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调整端口）。以下文档说明所有公开接口及其输入输出格式。
+服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调整端口）。以下接口均由 Basic Auth 保护，和 Python 版保持一致。
 
 ## 鉴权
 
-- 所有 HTTP 接口均要求使用 **HTTP Basic Auth**，用户名/密码来源于 `config.yaml` 的 `users` 配置。
-- 如果未在配置中声明，则默认存在 `admin` 用户，密码为 `642531`。
-- 客户端应在请求头里携带 `Authorization: Basic <base64(username:password)>`，否则会返回 `401 Unauthorized`。
+- 所有 HTTP 接口都需要在请求头里携带 `Authorization: Basic <base64(username:password)>`
+- `config.yaml` 的 `users` 列中定义合法的用户名/密码；未声明时默认存在 `admin / 642531`
+- 认证失败返回 `401 Unauthorized`
 
 ## 1. `POST /chat`
 
-- **功能**：与 Claude Agent SDK 建立流式（SSE）对话。
-- **请求体（新会话）**：
+- **功能**：调用 Claude Code Agent SDK，以 SSE 形式返回流式事件
+- **新会话请求体**
   ```json
   {
-    "message": "第一条用户输入",
-    "cwd": "C:/path/to/project"
+    "message": "第一条输入",
+    "cwd": "C:/path/to/project",
+    "permission_mode": "default",
+    "system_prompt": { "type": "preset", "preset": "claude_code" }
   }
   ```
-- **请求体（继续会话）**：
+- **继续会话请求体**
   ```json
   {
     "session_id": "session-uuid",
     "message": "继续对话"
   }
   ```
-- **参数说明**：
-  - `permission_mode`（可选，默认 `default`）：`default` / `plan` / `acceptEdits` / `bypassPermissions`，直接透传至 `ClaudeAgentOptions.permission_mode`。
-  - `system_prompt`（可选，默认 Claude Code 预设）：可为字符串，或 `{ "type": "preset", "preset": "claude_code" }`，透传至 `ClaudeAgentOptions.system_prompt`。
-- **响应**：`text/event-stream`。事件类型：
-  - `session`：返回当前 `session_id`、`cwd`、`is_new`。
-  - `token`：助手增量文本，便于前端即时渲染。
-  - `message`：**完整透传** Claude Agent SDK 的原始消息字典（可能是 `system` / `user` / `assistant` / `result` / `stream_event` 等类型），不再改写角色或内容，方便前端按 Claude Code 原语义处理。
-  - `done`：单轮完成事件，附带 `length` 等元信息。
-  - `error`：异常事件。
+- `permission_mode` 透传给 `ClaudeAgentOptions.permission_mode`，取值 `default` / `plan` / `acceptEdits` / `bypassPermissions`
+- `system_prompt` 透传给 `ClaudeAgentOptions.system_prompt`，可为字符串或 JSON 对象
+- **响应**：`text/event-stream`，事件类型：
+  - `session`：当前 `session_id`、`cwd`、`is_new`
+  - `token`：助手增量文本
+  - `message`：完整透传 Claude SDK 的原始消息（system/user/assistant/result/stream_event…）
+  - `done`：单轮完成事件，附带输出长度
+  - `error`：异常信息
 
 ## 2. `GET /sessions`
 
-- **功能**：列出所有已知主会话的概要信息。
-- **响应**：
+- **功能**：按 `updated_at` 倒序列出所有 Claude 主会话概要
+- **响应示例**
   ```json
   [
     {
-      "session_id": "...",
+      "session_id": "019a804b-...",
       "title": "会话标题",
       "cwd": "C:/path",
       "created_at": "ISO8601",
@@ -54,8 +55,8 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
 
 ## 3. `GET /sessions/{session_id}`
 
-- **功能**：返回指定会话的完整信息及消息列表。
-- **响应**：
+- **功能**：返回指定 Claude 会话的完整信息及 JSONL 消息列表
+- **响应示例**
   ```json
   {
     "session_id": "...",
@@ -70,18 +71,16 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
     ]
   }
   ```
-  `messages` 数组对应 Claude Code JSONL 文件的逐行记录，原样返回，包含工具调用、引用、流事件等全部字段（文件位于 `~/.claude/projects/<slug>/<session>.jsonl`）。
+  `messages` 数组直接来自 `~/.claude/projects/<slug>/<session>.jsonl`
 
 ## 4. `POST /sessions/load`
 
-- **功能**：扫描 Claude Code 存档目录，将主会话与 Agent 子会话写入数据库。
-- **请求体（可选）**：
+- **功能**：扫描 Claude Code 存档目录，将主会话与 Agent 子会话写入数据库
+- **请求体（可选）**
   ```json
-  {
-    "claude_dir": "C:/Users/11988/.claude"
-  }
+  { "claude_dir": "C:/Users/11988/.claude" }
   ```
-- **响应**：
+- **响应**
   ```json
   {
     "claude_dir": "最终使用的目录",
@@ -92,28 +91,34 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
 
 ## 5. 配置与存储
 
-- `config.yaml`（项目根目录）：
-  ```yaml
-  claude_dir: C:/Users/11988/.claude
-  sessions_db: ./sessions.db
-  port: 8207
-  users:
-    admin: 642531
-    alice: mypassword
-  ```
-  - `claude_dir`：Claude Code 项目根目录（含 `projects/`）；为空时会自动探测，优先 `~/.claude`。
-  - `sessions_db`：SQLite 文件路径，支持绝对或相对路径。
-  - `port`：FastAPI 服务监听端口，`start_server.ps1` 同步读取。
-  - `users`：用户名到明文密码的映射；若未提供则默认仅存在 `admin/642531`。配置多名用户时，每个用户都可各自管理自己的全局设置。
-- 数据库表：
-  - `sessions`：主会话（`session_id`、`title`、`cwd`、`created_at`、`updated_at`）。
-  - `agent_sessions`：子 Agent 会话（`agent_id`、`parent_session_id`、`title`、`cwd`、时间戳）。
+`config.yaml` 示例：
+```yaml
+claude_dir: C:/Users/11988/.claude
+codex_dir: C:/Users/11988/.codex/sessions
+codex_api_key: ""       # 可选，缺省读取环境变量 CODEX_API_KEY
+codex_cli_path: ""      # 可选，自定义 codex 可执行文件
+sessions_db: ./sessions.db
+port: 8207
+users:
+  admin: 642531
+```
 
-## 6. `GET /users/{user_id}/settings` 与 `PUT /users/{user_id}/settings`
+- `claude_dir`：Claude Code 项目根目录（为空时自动探测 `~/.claude`）
+- `codex_dir`：Codex CLI 会话目录（默认为 `~/.codex/sessions`）
+- `sessions_db`：SQLite 文件路径（可相对或绝对）
+- `users`：Basic Auth 用户表
+- SQLite 中维护的表：
+  - `sessions`：Claude 主会话
+  - `agent_sessions`：Claude Agent 子会话
+  - `user_settings`：Claude per-user 设置
+  - `codex_sessions`：Codex 主会话
+  - `codex_user_settings`：Codex per-user 设置（JSON 形式）
 
-- **功能**：读写某个用户的全局偏好（当前包含 `permission_mode`、`system_prompt`）。
-- **认证**：路径中的 `user_id` 必须与认证用户相同，否则会返回 403。
-- **GET 响应**：
+## 6. `GET/PUT /users/{user_id}/settings`
+
+- **功能**：读写某个用户的全局偏好（`permission_mode`、`system_prompt`）
+- **权限**：路径中的 `user_id` 必须等于 Basic Auth 用户名，否则返回 403
+- **GET 默认响应**
   ```json
   {
     "user_id": "someone",
@@ -121,19 +126,40 @@ FastAPI 服务默认监听 `http://127.0.0.1:8207`（可在 `config.yaml` 中调
     "system_prompt": { "type": "preset", "preset": "claude_code" }
   }
   ```
-  若该用户尚未保存任何内容，接口仍会返回默认值，方便前端提前填充表单。
-- **PUT 请求/响应**：
+- **PUT 示例**
   ```json
   {
     "permission_mode": "plan",
     "system_prompt": "You are a helpful assistant"
   }
   ```
-  PUT 会覆盖整条记录，返回最新的 `user_id` + 请求体字段。`system_prompt` 可为字符串或任意可序列化 JSON 对象。
-- **数据存储**：新增 `user_settings` 表，字段：`user_id`（主键）、`permission_mode`、`system_prompt`（JSON 字符串）。
 
 ## 7. CLI 辅助脚本
 
-- `cc_B/read_session.py`：读取 JSONL，输出指定会话的原始记录。
-- `cc_B/test_read_session_api.py`：调用 `/sessions` 相关接口做冒烟测试。
-- `start_server.ps1`：根据虚拟环境与 `config.yaml` 启动 FastAPI 服务。
+- `cc_B/read_session.py`：读取 Claude JSONL 并输出完整消息
+- `cc_B/test_read_session_api.py`：调用 `/sessions` 相关接口做冒烟测试
+- `start_server.ps1`：根据虚拟环境与 `config.yaml` 启动后端服务
+
+## 8. Codex CLI 相关接口（`/codex/*`）
+
+Codex HTTP 路径与 Claude 路径的鉴权与返回格式保持一致，只是在 URL 前添加 `/codex` 前缀，并使用 `@openai/codex-sdk` 调用本地 Codex CLI。
+
+- `POST /codex/chat`：请求体与 `/chat` 类似，但支持 Codex 专用字段：
+  - `approval_policy`: `"never" | "on-request" | "on-failure" | "untrusted"`
+  - `sandbox_mode`: `"read-only" | "workspace-write" | "danger-full-access"`
+  - `skip_git_repo_check`: `true/false`
+  - `model`, `model_reasoning_effort`, `network_access_enabled`, `web_search_enabled`
+  这些字段若未提供，会回退到 `/codex/users/{user_id}/settings` 保存的 JSON 默认值。SSE 事件仍为 `session`/`token`/`message`/`done`/`error`。
+- `GET /codex/sessions`、`GET /codex/sessions/{session_id}`、`POST /codex/sessions/load`：与 Claude 版本一一对应，只是读取 `codex_dir` 并写入 `codex_sessions` 表。
+- `GET/PUT /codex/users/{user_id}/settings`：存储 Codex per-user 默认参数，例如：
+  ```json
+  {
+    "approval_policy": "on-request",
+    "sandbox_mode": "read-only",
+    "model_reasoning_effort": "medium",
+    "network_access_enabled": false,
+    "web_search_enabled": false,
+    "skip_git_repo_check": false
+  }
+  ```
+  `/codex/chat` 会在请求体未提供时自动应用这些默认值。
