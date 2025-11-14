@@ -49,6 +49,8 @@ share the same credential check.
 - `POST /codex/chat` streams Codex CLI events over SSE with the same event names
   (`session`, `token`, `message`, `done`, `error`) as the Claude endpoint, so front-ends
   can reuse their client logic.
+- `dev_tests/codex_sdk_smoketest.mjs` 是最小化的 Codex SDK 测试脚本，可帮助排查 CLI/SKD 环境。
+  例如：`node dev_tests/codex_sdk_smoketest.mjs ./ "List files" --approval=never --sandbox=workspace-write`.
 
 ## Notes
 
