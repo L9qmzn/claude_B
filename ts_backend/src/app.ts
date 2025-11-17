@@ -482,9 +482,18 @@ export function createApp(): express.Express {
     };
 
     let streamClosed = false;
-    req.on("close", () => {
+    const abortStreaming = () => {
+      if (streamClosed) {
+        return;
+      }
       streamClosed = true;
       abortController.abort();
+    };
+    req.on("aborted", abortStreaming);
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        abortStreaming();
+      }
     });
 
     (async () => {
