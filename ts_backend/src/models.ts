@@ -1,3 +1,4 @@
+import type { Options as ClaudeAgentOptions } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ApprovalMode,
   ModelReasoningEffort,
@@ -7,6 +8,33 @@ import type {
 export type PermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions";
 
 export type SystemPrompt = string | Record<string, unknown> | null;
+
+export interface ClaudeChatOptionsPayload {
+  additional_directories?: ClaudeAgentOptions["additionalDirectories"];
+  agents?: ClaudeAgentOptions["agents"];
+  allowed_tools?: ClaudeAgentOptions["allowedTools"];
+  continue?: ClaudeAgentOptions["continue"];
+  disallowed_tools?: ClaudeAgentOptions["disallowedTools"];
+  env?: ClaudeAgentOptions["env"];
+  executable?: ClaudeAgentOptions["executable"];
+  executable_args?: ClaudeAgentOptions["executableArgs"];
+  extra_args?: ClaudeAgentOptions["extraArgs"];
+  fallback_model?: ClaudeAgentOptions["fallbackModel"];
+  fork_session?: ClaudeAgentOptions["forkSession"];
+  include_partial_messages?: ClaudeAgentOptions["includePartialMessages"];
+  max_thinking_tokens?: ClaudeAgentOptions["maxThinkingTokens"];
+  max_turns?: ClaudeAgentOptions["maxTurns"];
+  max_budget_usd?: ClaudeAgentOptions["maxBudgetUsd"];
+  mcp_servers?: ClaudeAgentOptions["mcpServers"];
+  model?: ClaudeAgentOptions["model"];
+  path_to_claude_code_executable?: ClaudeAgentOptions["pathToClaudeCodeExecutable"];
+  allow_dangerously_skip_permissions?: ClaudeAgentOptions["allowDangerouslySkipPermissions"];
+  permission_prompt_tool_name?: ClaudeAgentOptions["permissionPromptToolName"];
+  plugins?: ClaudeAgentOptions["plugins"];
+  resume_session_at?: ClaudeAgentOptions["resumeSessionAt"];
+  setting_sources?: ClaudeAgentOptions["settingSources"];
+  strict_mcp_config?: ClaudeAgentOptions["strictMcpConfig"];
+}
 
 export interface Session {
   session_id: string;
@@ -26,7 +54,7 @@ export interface SessionSummary {
   message_count: number;
 }
 
-export interface ChatRequest {
+export interface ChatRequest extends ClaudeChatOptionsPayload {
   session_id?: string;
   cwd?: string;
   message: string;

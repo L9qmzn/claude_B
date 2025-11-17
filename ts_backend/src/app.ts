@@ -38,6 +38,7 @@ import {
   CodexUserSettingsRequest,
   PermissionMode,
   Session,
+  SystemPrompt,
   UserSettings,
   defaultCodexUserSettings,
   defaultSystemPrompt,
@@ -181,6 +182,94 @@ function buildCodexThreadOptions(body: CodexChatRequest, cwd: string): ThreadOpt
     networkAccessEnabled: body.network_access_enabled,
     webSearchEnabled: body.web_search_enabled,
   };
+}
+
+function buildClaudeOptionsFromRequest(params: {
+  body: ChatRequest;
+  cwd: string;
+  permissionMode: PermissionMode;
+  systemPrompt: SystemPrompt;
+  abortController: AbortController;
+}): ClaudeAgentOptions {
+  const { body, cwd, permissionMode, systemPrompt, abortController } = params;
+  const options: ClaudeAgentOptions = {
+    resume: body.session_id ?? undefined,
+    cwd,
+    includePartialMessages: body.include_partial_messages ?? true,
+    settingSources: body.setting_sources ?? ["user"],
+    permissionMode,
+    systemPrompt: (systemPrompt ?? undefined) as any,
+    abortController,
+  };
+
+  if (body.additional_directories !== undefined) {
+    options.additionalDirectories = body.additional_directories;
+  }
+  if (body.agents !== undefined) {
+    options.agents = body.agents;
+  }
+  if (body.allowed_tools !== undefined) {
+    options.allowedTools = body.allowed_tools;
+  }
+  if (body.disallowed_tools !== undefined) {
+    options.disallowedTools = body.disallowed_tools;
+  }
+  if (body.env !== undefined) {
+    options.env = body.env;
+  }
+  if (body.executable !== undefined) {
+    options.executable = body.executable;
+  }
+  if (body.executable_args !== undefined) {
+    options.executableArgs = body.executable_args;
+  }
+  if (body.extra_args !== undefined) {
+    options.extraArgs = body.extra_args;
+  }
+  if (body.fallback_model !== undefined) {
+    options.fallbackModel = body.fallback_model;
+  }
+  if (body.fork_session !== undefined) {
+    options.forkSession = body.fork_session;
+  }
+  if (body.max_thinking_tokens !== undefined) {
+    options.maxThinkingTokens = body.max_thinking_tokens;
+  }
+  if (body.max_turns !== undefined) {
+    options.maxTurns = body.max_turns;
+  }
+  if (body.max_budget_usd !== undefined) {
+    options.maxBudgetUsd = body.max_budget_usd;
+  }
+  if (body.mcp_servers !== undefined) {
+    options.mcpServers = body.mcp_servers;
+  }
+  if (body.model !== undefined) {
+    options.model = body.model;
+  }
+  if (body.path_to_claude_code_executable !== undefined) {
+    options.pathToClaudeCodeExecutable = body.path_to_claude_code_executable;
+  }
+  if (body.allow_dangerously_skip_permissions !== undefined) {
+    options.allowDangerouslySkipPermissions = body.allow_dangerously_skip_permissions;
+  }
+  if (body.permission_prompt_tool_name !== undefined) {
+    options.permissionPromptToolName = body.permission_prompt_tool_name;
+  }
+  if (body.plugins !== undefined) {
+    options.plugins = body.plugins;
+  }
+  if (body.resume_session_at !== undefined) {
+    options.resumeSessionAt = body.resume_session_at;
+  }
+  if (body.strict_mcp_config !== undefined) {
+    options.strictMcpConfig = body.strict_mcp_config;
+  }
+  if (body.continue !== undefined) {
+    options.continue = body.continue;
+  }
+
+  return options;
 }
 
 function emitCodexAgentChunk(
@@ -494,15 +583,13 @@ export function createApp(): express.Express {
     };
 
     const abortController = new AbortController();
-    const options: ClaudeAgentOptions = {
-      resume: body.session_id ?? undefined,
+    const options = buildClaudeOptionsFromRequest({
+      body,
       cwd: finalCwd,
-      includePartialMessages: true,
-      settingSources: ["user"],
       permissionMode,
-      systemPrompt: (systemPrompt ?? undefined) as any,
+      systemPrompt,
       abortController,
-    };
+    });
 
     let streamClosed = false;
     const abortStreaming = () => {
