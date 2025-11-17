@@ -1,5 +1,7 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
+import { ENABLE_VERBOSE_LOGS } from "./config";
+
 export type AnyRecord = Record<string, unknown>;
 
 export function formatSse(event: string, data: AnyRecord): string {
@@ -43,16 +45,23 @@ export function serializeSdkMessage(message: SDKMessage): AnyRecord | null {
   return null;
 }
 
-export function logSdkMessage(label: string, payload: AnyRecord | null): void {
+export function logSdkMessage(
+  label: string,
+  payload: AnyRecord | null,
+  source = "ClaudeSDK",
+): void {
+  if (!ENABLE_VERBOSE_LOGS) {
+    return;
+  }
   try {
     // eslint-disable-next-line no-console
     console.log(
-      `[ClaudeSDK:${label}]\n${
+      `[${source}:${label}]\n${
         payload ? JSON.stringify(payload, null, 2) : "<empty>"
       }\n`,
     );
   } catch {
     // eslint-disable-next-line no-console
-    console.log(`[ClaudeSDK:${label}]\n${String(payload)}\n`);
+    console.log(`[${source}:${label}]\n${String(payload)}\n`);
   }
 }

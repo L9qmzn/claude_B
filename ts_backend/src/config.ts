@@ -13,6 +13,7 @@ export interface AppConfig {
   codex_dir?: string;
   codex_api_key?: string;
   codex_cli_path?: string;
+  verbose_logs?: boolean;
 }
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
@@ -92,6 +93,7 @@ export function loadAppConfig(): AppConfig {
     codex_dir: "",
     codex_api_key: "",
     codex_cli_path: "",
+    verbose_logs: true,
   };
 
   let loaded: unknown = {};
@@ -117,6 +119,22 @@ export function loadAppConfig(): AppConfig {
         }
         if (Object.keys(sanitized).length > 0) {
           config.users = sanitized;
+        }
+        continue;
+      }
+
+      if (typeof key === "string" && key === "verbose_logs") {
+        if (typeof value === "boolean") {
+          config.verbose_logs = value;
+        } else if (typeof value === "string") {
+          const normalized = value.trim().toLowerCase();
+          if (["true", "1", "yes", "on"].includes(normalized)) {
+            config.verbose_logs = true;
+          } else if (["false", "0", "no", "off"].includes(normalized)) {
+            config.verbose_logs = false;
+          }
+        } else if (typeof value === "number") {
+          config.verbose_logs = value !== 0;
         }
         continue;
       }
@@ -157,6 +175,7 @@ export const CONFIG = loadAppConfig();
 export const CLAUDE_ROOT = path.resolve(CONFIG.claude_dir);
 export const CLAUDE_PROJECTS_DIR = path.join(CLAUDE_ROOT, "projects");
 export const CODEX_SESSIONS_DIR = path.resolve(CONFIG.codex_dir || detectCodexSessionsDir());
+export const ENABLE_VERBOSE_LOGS = CONFIG.verbose_logs !== false;
 
 const sessionsDb = CONFIG.sessions_db;
 const dbPath = path.isAbsolute(sessionsDb)

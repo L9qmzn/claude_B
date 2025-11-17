@@ -14,6 +14,7 @@ import {
   CODEX_API_KEY,
   CODEX_CLI_PATH,
   CODEX_SESSIONS_DIR,
+  ENABLE_VERBOSE_LOGS,
   USER_CREDENTIALS,
 } from "./config";
 import { initDb } from "./database";
@@ -278,6 +279,28 @@ export function createApp(): express.Express {
 
   const app = express();
   app.use(express.json({ limit: "1mb" }));
+  app.use((req, res, next) => {
+    if (!ENABLE_VERBOSE_LOGS) {
+      next();
+      return;
+    }
+    const start = Date.now();
+    const { method } = req;
+    const url = req.originalUrl || req.url;
+    const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+    res.on("finish", () => {
+      const duration = Date.now() - start;
+      const status = res.statusCode;
+      const length = res.getHeader("content-length");
+      // eslint-disable-next-line no-console
+      console.log(
+        `[HTTP] ${method ?? "UNKNOWN"} ${url} - ${status} (${duration}ms) from ${clientIp}${
+          length ? ` len=${length}` : ""
+        }`,
+      );
+    });
+    next();
+  });
   app.use(basicAuthMiddleware);
 
   app.get("/sessions", (_req, res) => {
@@ -511,7 +534,7 @@ export function createApp(): express.Express {
 
           const rawPayload = serializeSdkMessage(message);
           if (rawPayload) {
-            logSdkMessage(message.type, rawPayload);
+            logSdkMessage(message.type, rawPayload, "ClaudeSDK");
           }
 
           if (isSystemInitMessage(message)) {
@@ -720,6 +743,8 @@ export function createApp(): express.Express {
           if (streamClosed) {
             break;
           }
+
+          logSdkMessage(event.type, event as AnyRecord, "CodexSDK");
 
           if (event.type === "thread.started") {
             if (!sessionId) {
