@@ -6,6 +6,7 @@ import {
   query,
   type Options as ClaudeAgentOptions,
   type SDKMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ThreadOptions } from "@openai/codex-sdk";
 
@@ -49,6 +50,7 @@ import {
   fetchCodexUserSettings,
   upsertCodexUserSettings,
 } from "./codexUserSettingsStore";
+import { MessageQueue } from "./messageQueue";
 
 declare global {
   namespace Express {
@@ -66,6 +68,19 @@ const VALID_PERMISSION_MODES: PermissionMode[] = [
 ];
 
 const activeClaudeRuns = new Map<string, AbortController>();
+
+type ActiveSession = {
+  messageQueue: MessageQueue;
+  runId: string;
+  abortController: AbortController;
+  cwd: string;
+  sessionId: string | null;
+  connections: Set<Response>;
+  permissionMode: PermissionMode;
+  systemPrompt: SystemPrompt;
+};
+
+const activeSessions = new Map<string, ActiveSession>();
 
 type CodexModule = typeof import("@openai/codex-sdk");
 type CodexClientInstance = InstanceType<CodexModule["Codex"]>;
@@ -544,8 +559,32 @@ export function createApp(): express.Express {
       body && Object.prototype.hasOwnProperty.call(body, "system_prompt");
     const systemPrompt = hasSystemPrompt ? body.system_prompt ?? null : defaultSystemPrompt();
     const now = new Date();
-    const isNewSession = !body.session_id;
+    const userMessageText = body.message;
 
+    // Determine session key for tracking active sessions
+    const sessionKey = body.session_id || `temp_${generateRunId()}`;
+
+    // Check if there's already an active session for this session_id
+    const activeSession = body.session_id ? activeSessions.get(body.session_id) : null;
+
+    if (activeSession) {
+      // Session is already running - this is the continuous messaging feature!
+      // eslint-disable-next-line no-console
+      console.log(`[Claude] Session ${body.session_id} is still active, queueing new message`);
+
+      // Instead of adding to the existing stream, we'll let the current query finish
+      // and use the 'continue' option to send the follow-up message
+      // For now, return an error indicating the session is busy
+      res.status(409).json({
+        detail: "Session is currently processing. Please wait for the current response to complete.",
+        session_id: body.session_id,
+        run_id: activeSession.runId
+      });
+      return;
+    }
+
+    // No active session - validate and prepare to start a new one
+    const isNewSession = !body.session_id;
     let existingSession: Session | null = null;
     let finalCwd: string;
 
@@ -575,6 +614,7 @@ export function createApp(): express.Express {
       finalCwd = existingSession.cwd;
     }
 
+    // Set up SSE response
     const runId = generateRunId();
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -584,33 +624,51 @@ export function createApp(): express.Express {
       res.flushHeaders();
     }
 
-    const userMessageText = body.message;
-    const newSessionTitle = deriveSessionTitle(userMessageText);
-    const assistantChunks: string[] = [];
+    // Create active session tracking
+    const abortController = new AbortController();
     let sessionId: string | null = body.session_id ?? null;
+    const newSessionTitle = deriveSessionTitle(userMessageText);
     const isNewSessionFlag = isNewSession;
 
-    let clientConnected = true;
-    const writeEvent = (event: string, payload: AnyRecord) => {
-      if (!clientConnected || res.writableEnded) {
-        return;
-      }
-      try {
-        res.write(formatSse(event, payload));
-      } catch (error) {
-        clientConnected = false;
-        // eslint-disable-next-line no-console
-        console.warn(`[SSE] failed to write ${event}:`, error);
-      }
+    const newActiveSession: ActiveSession = {
+      messageQueue: new MessageQueue(), // Not used in current implementation
+      runId,
+      abortController,
+      cwd: finalCwd,
+      sessionId,
+      connections: new Set([res]),
+      permissionMode,
+      systemPrompt,
     };
-    const markClientClosed = () => {
-      clientConnected = false;
-    };
-    req.on("aborted", markClientClosed);
-    res.on("close", markClientClosed);
 
-    const abortController = new AbortController();
+    // Register active session
+    if (body.session_id) {
+      activeSessions.set(body.session_id, newActiveSession);
+    }
     activeClaudeRuns.set(runId, abortController);
+
+    // Clean up when connections close
+    const cleanup = () => {
+      newActiveSession.connections.delete(res);
+    };
+    req.on("aborted", cleanup);
+    res.on("close", cleanup);
+
+    // Broadcast event to all connections
+    const broadcastEvent = (event: string, payload: AnyRecord) => {
+      const data = formatSse(event, payload);
+      for (const connection of newActiveSession.connections) {
+        if (!connection.writableEnded) {
+          try {
+            connection.write(data);
+          } catch (error) {
+            // eslint-disable-next-line no-console
+            console.warn(`[SSE] failed to write ${event}:`, error);
+          }
+        }
+      }
+    };
+
     const options = buildClaudeOptionsFromRequest({
       body,
       cwd: finalCwd,
@@ -621,9 +679,11 @@ export function createApp(): express.Express {
 
     // eslint-disable-next-line no-console
     console.log(`[Claude] starting run ${runId} for cwd=${finalCwd}`);
-    writeEvent("run", { run_id: runId });
+    broadcastEvent("run", { run_id: runId });
 
+    // Start the query with string prompt (not AsyncIterable)
     (async () => {
+      const assistantChunks: string[] = [];
       try {
         const stream = query({
           prompt: userMessageText,
@@ -640,6 +700,16 @@ export function createApp(): express.Express {
           if (isSystemInitMessage(message)) {
             if (!sessionId) {
               sessionId = message.session_id;
+              newActiveSession.sessionId = sessionId;
+
+              // Update session registration with real session ID
+              if (body.session_id && body.session_id !== sessionId) {
+                activeSessions.delete(body.session_id);
+              }
+              if (sessionId) {
+                activeSessions.set(sessionId, newActiveSession);
+              }
+
               if (sessionId && isNewSessionFlag) {
                 persistSessionMetadata({
                   session_id: sessionId,
@@ -649,13 +719,13 @@ export function createApp(): express.Express {
                   updated_at: now,
                 });
               }
-              writeEvent("session", {
+              broadcastEvent("session", {
                 session_id: sessionId,
                 cwd: finalCwd,
                 is_new: true,
               });
             } else {
-              writeEvent("session", {
+              broadcastEvent("session", {
                 session_id: sessionId,
                 cwd: finalCwd,
                 is_new: false,
@@ -672,7 +742,7 @@ export function createApp(): express.Express {
                 const chunk = block.text;
                 if (chunk) {
                   assistantChunks.push(chunk);
-                  writeEvent("token", {
+                  broadcastEvent("token", {
                     session_id: sessionId,
                     text: chunk,
                   });
@@ -684,7 +754,13 @@ export function createApp(): express.Express {
           if (isResultMessage(message)) {
             if (!sessionId) {
               sessionId = message.session_id;
-              writeEvent("session", {
+              newActiveSession.sessionId = sessionId;
+
+              if (sessionId) {
+                activeSessions.set(sessionId, newActiveSession);
+              }
+
+              broadcastEvent("session", {
                 session_id: sessionId,
                 cwd: finalCwd,
                 is_new: isNewSessionFlag,
@@ -704,8 +780,12 @@ export function createApp(): express.Express {
             const payloadSessionId = extractSessionIdFromPayload(rawPayload) ?? sessionId;
             if (!sessionId && payloadSessionId) {
               sessionId = payloadSessionId;
+              newActiveSession.sessionId = sessionId;
+              if (sessionId) {
+                activeSessions.set(sessionId, newActiveSession);
+              }
             }
-            writeEvent("message", {
+            broadcastEvent("message", {
               session_id: payloadSessionId,
               payload: rawPayload,
             });
@@ -725,7 +805,7 @@ export function createApp(): express.Express {
           updated_at: now,
         });
 
-        writeEvent("done", {
+        broadcastEvent("done", {
           run_id: runId,
           session_id: sessionId,
           cwd: finalCwd,
@@ -736,20 +816,31 @@ export function createApp(): express.Express {
           (error instanceof Error && error.name === "AbortError") ||
           (error instanceof Error && error.message.toLowerCase().includes("abort"));
         if (isAborted) {
-          writeEvent("stopped", {
+          broadcastEvent("stopped", {
             run_id: runId,
             session_id: sessionId,
           });
         } else {
-          writeEvent("error", {
+          broadcastEvent("error", {
             run_id: runId,
             message: error instanceof Error ? error.message : String(error),
           });
         }
       } finally {
+        // Clean up
         activeClaudeRuns.delete(runId);
-        if (!res.writableEnded) {
-          res.end();
+        if (sessionId) {
+          activeSessions.delete(sessionId);
+        }
+        if (body.session_id && body.session_id !== sessionId) {
+          activeSessions.delete(body.session_id);
+        }
+
+        // Close all connections
+        for (const connection of newActiveSession.connections) {
+          if (!connection.writableEnded) {
+            connection.end();
+          }
         }
       }
     })();

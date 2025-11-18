@@ -27,6 +27,17 @@
     "message": "继续对话"
   }
   ```
+- **持续对话行为**：
+  - ✅ 当会话处于空闲状态时，携带 `session_id` 的请求会立即开始处理新消息
+  - ⚠️ 当会话正在处理中（上一条消息还在流式返回）时，发送新消息会返回 `409 Conflict`，响应体包含：
+    ```json
+    {
+      "detail": "Session is currently processing. Please wait for the current response to complete.",
+      "session_id": "...",
+      "run_id": "..."
+    }
+    ```
+  - 💡 客户端应等待 `done` 事件后再发送下一条消息，或实现重试机制处理 409 状态码
 - `permission_mode` 透传给 `ClaudeAgentOptions.permission_mode`，取值 `default` / `plan` / `acceptEdits` / `bypassPermissions`
 - `system_prompt` 透传给 `ClaudeAgentOptions.system_prompt`，可为字符串或 JSON 对象
 - **高级参数**：现在 `/chat` 还支持直接传入 `@anthropic-ai/claude-agent-sdk` 暴露的绝大多数配置项，所有字段采用蛇形命名并在内部映射到 `ClaudeAgentOptions`：`additional_directories`、`agents`、`allowed_tools`、`continue`、`disallowed_tools`、`env`、`executable`、`executable_args`、`extra_args`、`fallback_model`、`fork_session`、`include_partial_messages`、`max_thinking_tokens`、`max_turns`、`max_budget_usd`、`mcp_servers`、`model`、`path_to_claude_code_executable`、`allow_dangerously_skip_permissions`、`permission_prompt_tool_name`、`plugins`、`resume_session_at`、`setting_sources`、`strict_mcp_config`。
