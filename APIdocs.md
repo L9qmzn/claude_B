@@ -32,11 +32,15 @@
 - **高级参数**：现在 `/chat` 还支持直接传入 `@anthropic-ai/claude-agent-sdk` 暴露的绝大多数配置项，所有字段采用蛇形命名并在内部映射到 `ClaudeAgentOptions`：`additional_directories`、`agents`、`allowed_tools`、`continue`、`disallowed_tools`、`env`、`executable`、`executable_args`、`extra_args`、`fallback_model`、`fork_session`、`include_partial_messages`、`max_thinking_tokens`、`max_turns`、`max_budget_usd`、`mcp_servers`、`model`、`path_to_claude_code_executable`、`allow_dangerously_skip_permissions`、`permission_prompt_tool_name`、`plugins`、`resume_session_at`、`setting_sources`、`strict_mcp_config`。
   字段值与 CLI/SDK 文档保持一致，例如 `additional_directories` 期望字符串数组、`env` 期望键值对字典。
 - **响应**：`text/event-stream`，事件类型：
+  - `run`：连接建立后立即下发 `{ "run_id": "..." }`，便于前端主动停止任务
   - `session`：当前 `session_id`、`cwd`、`is_new`
   - `token`：助手增量文本
   - `message`：完整透传 Claude SDK 的原始消息（system/user/assistant/result/stream_event…）
   - `done`：单轮完成事件，附带输出长度
   - `error`：异常信息
+  - `stopped`：调用 `/chat/stop` 或服务器中断任务时的确认事件
+- 每次响应还会返回 `X-Claude-Run-Id` 响应头，与 `run` 事件的 `run_id` 相同。客户端掉线不会终止 Claude 任务，除非显式调用停止接口。
+- **停止接口**：`POST /chat/stop`，请求体 `{ "run_id": "<来自 run 事件或响应头>" }`，调用后立即终止指定任务并触发 `stopped` 事件；若 `run_id` 无效或已完成则返回 `404`。
 
 ## 2. `GET /sessions`
 

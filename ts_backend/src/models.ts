@@ -62,6 +62,10 @@ export interface ChatRequest extends ClaudeChatOptionsPayload {
   system_prompt?: SystemPrompt;
 }
 
+export interface StopChatRequest {
+  run_id: string;
+}
+
 export interface CodexChatRequest {
   session_id?: string;
   cwd?: string;

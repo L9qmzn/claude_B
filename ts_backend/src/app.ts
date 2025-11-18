@@ -38,6 +38,7 @@ import {
   CodexUserSettingsRequest,
   PermissionMode,
   Session,
+  StopChatRequest,
   SystemPrompt,
   UserSettings,
   defaultCodexUserSettings,
@@ -64,6 +65,8 @@ const VALID_PERMISSION_MODES: PermissionMode[] = [
   "bypassPermissions",
 ];
 
+const activeClaudeRuns = new Map<string, AbortController>();
+
 type CodexModule = typeof import("@openai/codex-sdk");
 type CodexClientInstance = InstanceType<CodexModule["Codex"]>;
 let codexClientPromise: Promise<CodexClientInstance> | null = null;
@@ -71,6 +74,13 @@ let codexClientPromise: Promise<CodexClientInstance> | null = null;
 const dynamicImport = new Function("specifier", "return import(specifier);") as (
   specifier: string,
 ) => Promise<CodexModule>;
+
+function generateRunId(): string {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return crypto.randomBytes(16).toString("hex");
+}
 
 async function getCodexClient(): Promise<CodexClientInstance> {
   if (!codexClientPromise) {
@@ -565,9 +575,11 @@ export function createApp(): express.Express {
       finalCwd = existingSession.cwd;
     }
 
+    const runId = generateRunId();
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Claude-Run-Id", runId);
     if (typeof res.flushHeaders === "function") {
       res.flushHeaders();
     }
@@ -578,11 +590,27 @@ export function createApp(): express.Express {
     let sessionId: string | null = body.session_id ?? null;
     const isNewSessionFlag = isNewSession;
 
+    let clientConnected = true;
     const writeEvent = (event: string, payload: AnyRecord) => {
-      res.write(formatSse(event, payload));
+      if (!clientConnected || res.writableEnded) {
+        return;
+      }
+      try {
+        res.write(formatSse(event, payload));
+      } catch (error) {
+        clientConnected = false;
+        // eslint-disable-next-line no-console
+        console.warn(`[SSE] failed to write ${event}:`, error);
+      }
     };
+    const markClientClosed = () => {
+      clientConnected = false;
+    };
+    req.on("aborted", markClientClosed);
+    res.on("close", markClientClosed);
 
     const abortController = new AbortController();
+    activeClaudeRuns.set(runId, abortController);
     const options = buildClaudeOptionsFromRequest({
       body,
       cwd: finalCwd,
@@ -591,20 +619,9 @@ export function createApp(): express.Express {
       abortController,
     });
 
-    let streamClosed = false;
-    const abortStreaming = () => {
-      if (streamClosed) {
-        return;
-      }
-      streamClosed = true;
-      abortController.abort();
-    };
-    req.on("aborted", abortStreaming);
-    res.on("close", () => {
-      if (!res.writableEnded) {
-        abortStreaming();
-      }
-    });
+    // eslint-disable-next-line no-console
+    console.log(`[Claude] starting run ${runId} for cwd=${finalCwd}`);
+    writeEvent("run", { run_id: runId });
 
     (async () => {
       try {
@@ -615,10 +632,6 @@ export function createApp(): express.Express {
 
         // eslint-disable-next-line no-restricted-syntax
         for await (const message of stream) {
-          if (streamClosed) {
-            break;
-          }
-
           const rawPayload = serializeSdkMessage(message);
           if (rawPayload) {
             logSdkMessage(message.type, rawPayload, "ClaudeSDK");
@@ -713,18 +726,50 @@ export function createApp(): express.Express {
         });
 
         writeEvent("done", {
+          run_id: runId,
           session_id: sessionId,
           cwd: finalCwd,
           length: assistantChunks.join("").length,
         });
       } catch (error) {
-        writeEvent("error", {
-          message: error instanceof Error ? error.message : String(error),
-        });
+        const isAborted =
+          (error instanceof Error && error.name === "AbortError") ||
+          (error instanceof Error && error.message.toLowerCase().includes("abort"));
+        if (isAborted) {
+          writeEvent("stopped", {
+            run_id: runId,
+            session_id: sessionId,
+          });
+        } else {
+          writeEvent("error", {
+            run_id: runId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
       } finally {
-        res.end();
+        activeClaudeRuns.delete(runId);
+        if (!res.writableEnded) {
+          res.end();
+        }
       }
     })();
+  });
+
+  app.post("/chat/stop", (req, res) => {
+    const body = (req.body ?? {}) as StopChatRequest;
+    const runId = typeof body?.run_id === "string" ? body.run_id.trim() : "";
+    if (!runId) {
+      res.status(400).json({ detail: "run_id is required" });
+      return;
+    }
+    const controller = activeClaudeRuns.get(runId);
+    if (!controller) {
+      res.status(404).json({ detail: "Run not found or already completed" });
+      return;
+    }
+    activeClaudeRuns.delete(runId);
+    controller.abort();
+    res.json({ run_id: runId, stopping: true });
   });
 
   app.post("/codex/chat", (req, res) => {
