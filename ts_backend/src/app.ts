@@ -50,7 +50,7 @@ import {
   fetchCodexUserSettings,
   upsertCodexUserSettings,
 } from "./codexUserSettingsStore";
-import { MessageQueue } from "./messageQueue";
+import { MessageStreamController } from "./messageQueue";
 
 declare global {
   namespace Express {
@@ -70,7 +70,7 @@ const VALID_PERMISSION_MODES: PermissionMode[] = [
 const activeClaudeRuns = new Map<string, AbortController>();
 
 type ActiveSession = {
-  messageQueue: MessageQueue;
+  streamController: MessageStreamController;
   runId: string;
   abortController: AbortController;
   cwd: string;
@@ -568,18 +568,53 @@ export function createApp(): express.Express {
     const activeSession = body.session_id ? activeSessions.get(body.session_id) : null;
 
     if (activeSession) {
-      // Session is already running - this is the continuous messaging feature!
+      // Session is already running - inject message into the active stream!
       // eslint-disable-next-line no-console
-      console.log(`[Claude] Session ${body.session_id} is still active, queueing new message`);
+      console.log(`[Claude] Session ${body.session_id} is active, injecting new message into stream`);
 
-      // Instead of adding to the existing stream, we'll let the current query finish
-      // and use the 'continue' option to send the follow-up message
-      // For now, return an error indicating the session is busy
-      res.status(409).json({
-        detail: "Session is currently processing. Please wait for the current response to complete.",
-        session_id: body.session_id,
-        run_id: activeSession.runId
-      });
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Claude-Run-Id", activeSession.runId);
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+
+      // Add this connection to the session's connections
+      activeSession.connections.add(res);
+
+      // Clean up when this connection closes
+      const cleanup = () => {
+        activeSession.connections.delete(res);
+      };
+      req.on("aborted", cleanup);
+      res.on("close", cleanup);
+
+      // Push the new message into the stream
+      const userMessage: SDKUserMessage = {
+        type: "user",
+        message: {
+          role: "user",
+          content: userMessageText,
+        },
+        parent_tool_use_id: null,
+        session_id: activeSession.sessionId || "",
+      };
+
+      try {
+        activeSession.streamController.push(userMessage);
+        // eslint-disable-next-line no-console
+        console.log(`[Claude] Message pushed to stream for session ${body.session_id}`);
+
+        // Note: We cannot cancel the timeout here because we don't have access to it
+        // The timeout will be managed by the main async function
+      } catch (error) {
+        res.status(400).json({
+          detail: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+
       return;
     }
 
@@ -624,14 +659,15 @@ export function createApp(): express.Express {
       res.flushHeaders();
     }
 
-    // Create active session tracking
+    // Create message stream controller
+    const streamController = new MessageStreamController();
     const abortController = new AbortController();
     let sessionId: string | null = body.session_id ?? null;
     const newSessionTitle = deriveSessionTitle(userMessageText);
     const isNewSessionFlag = isNewSession;
 
     const newActiveSession: ActiveSession = {
-      messageQueue: new MessageQueue(), // Not used in current implementation
+      streamController,
       runId,
       abortController,
       cwd: finalCwd,
@@ -641,10 +677,9 @@ export function createApp(): express.Express {
       systemPrompt,
     };
 
-    // Register active session
-    if (body.session_id) {
-      activeSessions.set(body.session_id, newActiveSession);
-    }
+    // Register active session - use a temporary key first if no session_id yet
+    const tempKey = body.session_id || runId;
+    activeSessions.set(tempKey, newActiveSession);
     activeClaudeRuns.set(runId, abortController);
 
     // Clean up when connections close
@@ -681,12 +716,40 @@ export function createApp(): express.Express {
     console.log(`[Claude] starting run ${runId} for cwd=${finalCwd}`);
     broadcastEvent("run", { run_id: runId });
 
-    // Start the query with string prompt (not AsyncIterable)
+    // Push first message to stream
+    const firstMessage: SDKUserMessage = {
+      type: "user",
+      message: {
+        role: "user",
+        content: userMessageText,
+      },
+      parent_tool_use_id: null,
+      session_id: sessionId || "",
+    };
+    streamController.push(firstMessage);
+
+    // Timeout to end stream if no new messages
+    let endStreamTimeout: NodeJS.Timeout | null = null;
+    const scheduleStreamEnd = () => {
+      if (endStreamTimeout) {
+        clearTimeout(endStreamTimeout);
+      }
+      // Wait 3 seconds after result, if no new messages arrive, end the stream
+      endStreamTimeout = setTimeout(() => {
+        if (!streamController.isEnded()) {
+          // eslint-disable-next-line no-console
+          console.log(`[Claude] No new messages for 3s, ending stream for session ${sessionId}`);
+          streamController.end();
+        }
+      }, 3000);
+    };
+
+    // Start the query with async iterable stream
     (async () => {
       const assistantChunks: string[] = [];
       try {
         const stream = query({
-          prompt: userMessageText,
+          prompt: streamController.stream(),
           options,
         });
 
@@ -703,10 +766,8 @@ export function createApp(): express.Express {
               newActiveSession.sessionId = sessionId;
 
               // Update session registration with real session ID
-              if (body.session_id && body.session_id !== sessionId) {
-                activeSessions.delete(body.session_id);
-              }
-              if (sessionId) {
+              if (tempKey !== sessionId) {
+                activeSessions.delete(tempKey);
                 activeSessions.set(sessionId, newActiveSession);
               }
 
@@ -742,10 +803,18 @@ export function createApp(): express.Express {
                 const chunk = block.text;
                 if (chunk) {
                   assistantChunks.push(chunk);
-                  broadcastEvent("token", {
-                    session_id: sessionId,
-                    text: chunk,
-                  });
+
+                  // Simulate token-level streaming by splitting text into words
+                  // This enables mid-stream message injection
+                  const words = chunk.split(/(\s+)/); // Split on whitespace, keeping delimiters
+                  for (const word of words) {
+                    if (word) {
+                      broadcastEvent("token", {
+                        session_id: sessionId,
+                        text: word,
+                      });
+                    }
+                  }
                 }
               }
             }
@@ -769,10 +838,30 @@ export function createApp(): express.Express {
             if (
               "result" in message &&
               typeof message.result === "string" &&
-              message.result &&
-              assistantChunks.length === 0
+              message.result
             ) {
-              assistantChunks.push(message.result);
+              if (assistantChunks.length === 0) {
+                assistantChunks.push(message.result);
+              }
+
+              // Simulate token-level streaming by splitting result text into words
+              // This enables clients to detect progress and send interrupting messages
+              const words = message.result.split(/(\s+)/);
+              for (const word of words) {
+                if (word) {
+                  broadcastEvent("token", {
+                    session_id: sessionId,
+                    text: word,
+                  });
+                }
+              }
+            }
+
+            // Result message received - schedule stream end if no new messages arrive
+            if (streamController.pendingCount === 0) {
+              // eslint-disable-next-line no-console
+              console.log(`[Claude] Result received, scheduling stream end for session ${sessionId}`);
+              scheduleStreamEnd();
             }
           }
 
@@ -827,13 +916,17 @@ export function createApp(): express.Express {
           });
         }
       } finally {
+        // Cancel timeout and end the stream controller
+        if (endStreamTimeout) {
+          clearTimeout(endStreamTimeout);
+        }
+        streamController.end();
+
         // Clean up
         activeClaudeRuns.delete(runId);
-        if (sessionId) {
+        activeSessions.delete(tempKey);
+        if (sessionId && sessionId !== tempKey) {
           activeSessions.delete(sessionId);
-        }
-        if (body.session_id && body.session_id !== sessionId) {
-          activeSessions.delete(body.session_id);
         }
 
         // Close all connections

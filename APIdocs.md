@@ -27,17 +27,15 @@
     "message": "继续对话"
   }
   ```
-- **持续对话行为**：
-  - ✅ 当会话处于空闲状态时，携带 `session_id` 的请求会立即开始处理新消息
-  - ⚠️ 当会话正在处理中（上一条消息还在流式返回）时，发送新消息会返回 `409 Conflict`，响应体包含：
-    ```json
-    {
-      "detail": "Session is currently processing. Please wait for the current response to complete.",
-      "session_id": "...",
-      "run_id": "..."
-    }
-    ```
-  - 💡 客户端应等待 `done` 事件后再发送下一条消息，或实现重试机制处理 409 状态码
+- **持续消息传递（Continuous Messaging）**：
+  - ✅ **支持中途发送新消息**：即使上一条消息还在流式返回中，也可以发送新消息到同一会话
+  - 🔄 **消息队列机制**：使用 `MessageStreamController` 管理消息队列，通过 `AsyncIterable<SDKUserMessage>` 接口持续向SDK注入消息
+  - ⏱️ **自动超时结束**：当收到 `result` 消息后，如果3秒内没有新消息到达，会自动结束stream并清理会话状态
+  - 📡 **广播模式**：多个HTTP连接可以订阅同一个 `session_id`，所有连接都会收到相同的响应事件
+  - 💡 **使用场景**：
+    - 在Claude响应过程中发送补充信息或修正指令
+    - 中断当前回答并提出新问题
+    - 实现真正的交互式对话体验
 - `permission_mode` 透传给 `ClaudeAgentOptions.permission_mode`，取值 `default` / `plan` / `acceptEdits` / `bypassPermissions`
 - `system_prompt` 透传给 `ClaudeAgentOptions.system_prompt`，可为字符串或 JSON 对象
 - **高级参数**：现在 `/chat` 还支持直接传入 `@anthropic-ai/claude-agent-sdk` 暴露的绝大多数配置项，所有字段采用蛇形命名并在内部映射到 `ClaudeAgentOptions`：`additional_directories`、`agents`、`allowed_tools`、`continue`、`disallowed_tools`、`env`、`executable`、`executable_args`、`extra_args`、`fallback_model`、`fork_session`、`include_partial_messages`、`max_thinking_tokens`、`max_turns`、`max_budget_usd`、`mcp_servers`、`model`、`path_to_claude_code_executable`、`allow_dangerously_skip_permissions`、`permission_prompt_tool_name`、`plugins`、`resume_session_at`、`setting_sources`、`strict_mcp_config`。
@@ -45,7 +43,10 @@
 - **响应**：`text/event-stream`，事件类型：
   - `run`：连接建立后立即下发 `{ "run_id": "..." }`，便于前端主动停止任务
   - `session`：当前 `session_id`、`cwd`、`is_new`
-  - `token`：助手增量文本
+  - `token`：助手增量文本（**单词级流式传输**）
+    - 服务器将SDK返回的完整响应文本拆分成单词级别的token
+    - 每个token包含一个单词或空格，格式：`{ "session_id": "...", "text": "word" }`
+    - 这种设计使客户端能够实时监控响应进度，并在合适的时机发送中断消息
   - `message`：完整透传 Claude SDK 的原始消息（system/user/assistant/result/stream_event…）
   - `done`：单轮完成事件，附带输出长度
   - `error`：异常信息
