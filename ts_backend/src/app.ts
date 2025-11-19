@@ -549,8 +549,24 @@ export function createApp(): express.Express {
 
   app.post("/chat", (req, res) => {
     const body = req.body as ChatRequest | undefined;
-    if (!body || typeof body.message !== "string" || !body.message.trim()) {
+    if (!body || !body.message) {
       res.status(400).json({ detail: "message is required" });
+      return;
+    }
+
+    // Validate message format
+    if (typeof body.message === "string") {
+      if (!body.message.trim()) {
+        res.status(400).json({ detail: "message cannot be empty" });
+        return;
+      }
+    } else if (Array.isArray(body.message)) {
+      if (body.message.length === 0) {
+        res.status(400).json({ detail: "message cannot be empty" });
+        return;
+      }
+    } else {
+      res.status(400).json({ detail: "message must be a string or array" });
       return;
     }
 
@@ -559,7 +575,11 @@ export function createApp(): express.Express {
       body && Object.prototype.hasOwnProperty.call(body, "system_prompt");
     const systemPrompt = hasSystemPrompt ? body.system_prompt ?? null : defaultSystemPrompt();
     const now = new Date();
-    const userMessageText = body.message;
+
+    // Extract text for session title
+    const userMessageText = typeof body.message === "string"
+      ? body.message
+      : body.message.find(block => block.type === "text")?.text || "New session with image";
 
     // Determine session key for tracking active sessions
     const sessionKey = body.session_id || `temp_${generateRunId()}`;
@@ -595,7 +615,7 @@ export function createApp(): express.Express {
         type: "user",
         message: {
           role: "user",
-          content: userMessageText,
+          content: body.message as any,
         },
         parent_tool_use_id: null,
         session_id: activeSession.sessionId || "",
@@ -721,7 +741,7 @@ export function createApp(): express.Express {
       type: "user",
       message: {
         role: "user",
-        content: userMessageText,
+        content: body.message as any,
       },
       parent_tool_use_id: null,
       session_id: sessionId || "",

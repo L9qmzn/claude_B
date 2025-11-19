@@ -11,10 +11,32 @@
 ## 1. `POST /chat`
 
 - **功能**：调用 Claude Code Agent SDK，以 SSE 形式返回流式事件
-- **新会话请求体**
+- **新会话请求体（文本消息）**
   ```json
   {
     "message": "第一条输入",
+    "cwd": "C:/path/to/project",
+    "permission_mode": "default",
+    "system_prompt": { "type": "preset", "preset": "claude_code" }
+  }
+  ```
+- **新会话请求体（带图片消息）**
+  ```json
+  {
+    "message": [
+      {
+        "type": "text",
+        "text": "请描述这张图片"
+      },
+      {
+        "type": "image",
+        "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": "<base64-encoded-image-data>"
+        }
+      }
+    ],
     "cwd": "C:/path/to/project",
     "permission_mode": "default",
     "system_prompt": { "type": "preset", "preset": "claude_code" }
@@ -27,6 +49,15 @@
     "message": "继续对话"
   }
   ```
+- **消息格式说明**：
+  - `message` 字段支持两种格式：
+    - **字符串**：纯文本消息，例如 `"message": "你好"`
+    - **内容块数组**：支持文本和图片的组合，每个内容块可以是：
+      - 文本块：`{ "type": "text", "text": "文本内容" }`
+      - 图片块：`{ "type": "image", "source": { "type": "base64", "media_type": "image/png|image/jpeg|image/gif|image/webp", "data": "<base64编码的图片数据>" } }`
+  - 图片必须使用 base64 编码
+  - 支持的图片格式：PNG、JPEG、GIF、WebP
+  - 一条消息可以包含多个文本块和图片块
 - **持续消息传递（Continuous Messaging）**：
   - ✅ **支持中途发送新消息**：即使上一条消息还在流式返回中，也可以发送新消息到同一会话
   - 🔄 **消息队列机制**：使用 `MessageStreamController` 管理消息队列，通过 `AsyncIterable<SDKUserMessage>` 接口持续向SDK注入消息
@@ -181,3 +212,174 @@ Codex HTTP 路径与 Claude 路径的鉴权与返回格式保持一致，只是�
   }
   ```
   `/codex/chat` 会在请求体未提供时自动应用这些默认值。
+
+## 9. 图片消息功能
+
+### 9.1 功能概述
+
+`/chat` 接口现在支持发送包含图片的消息。这使得 Claude 可以分析图片内容、回答关于图片的问题、或者基于图片进行编程任务。
+
+### 9.2 消息格式
+
+#### 纯文本消息（向后兼容）
+```json
+{
+  "message": "这是一条文本消息",
+  "cwd": "/path/to/project"
+}
+```
+
+#### 带图片的消息
+```json
+{
+  "message": [
+    {
+      "type": "text",
+      "text": "请分析这张图片中的UI布局"
+    },
+    {
+      "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB..."
+      }
+    }
+  ],
+  "cwd": "/path/to/project"
+}
+```
+
+#### 多图片消息
+```json
+{
+  "message": [
+    {
+      "type": "text",
+      "text": "比较这两张图片的差异"
+    },
+    {
+      "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "<base64-image-1>"
+      }
+    },
+    {
+      "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "<base64-image-2>"
+      }
+    }
+  ],
+  "cwd": "/path/to/project"
+}
+```
+
+### 9.3 支持的图片格式
+
+| 格式 | MIME 类型 | 说明 |
+|------|-----------|------|
+| PNG | `image/png` | 推荐用于截图和UI设计图 |
+| JPEG | `image/jpeg` | 推荐用于照片 |
+| GIF | `image/gif` | 支持静态GIF |
+| WebP | `image/webp` | 现代图片格式 |
+
+### 9.4 注意事项
+
+1. **图片大小限制**：
+   - 默认 JSON body 限制为 1MB
+   - Base64 编码会使图片大小增加约 33%
+   - 建议在发送前压缩或调整图片大小
+   - 如需更大限制，可在 `ts_backend/src/app.ts` 中修改 `express.json({ limit: "10mb" })`
+
+2. **Base64 编码**：
+   - 所有图片必须转换为 base64 编码字符串
+   - Python 示例：
+     ```python
+     import base64
+     with open("image.png", "rb") as f:
+         image_data = base64.b64encode(f.read()).decode("utf-8")
+     ```
+   - JavaScript 示例：
+     ```javascript
+     const fs = require('fs');
+     const imageData = fs.readFileSync('image.png').toString('base64');
+     ```
+
+3. **性能考虑**：
+   - 大图片会增加请求处理时间
+   - 建议将图片缩放至合理尺寸（如 1024x1024 以内）
+   - 对于UI截图，PNG 格式通常能提供更好的压缩比
+
+4. **会话继续**：
+   - 图片消息同样支持会话继续功能
+   - 后续消息可以引用之前发送的图片内容
+
+### 9.5 使用示例
+
+项目提供了完整的 Python demo：`dev_tests/demo_chat_with_image.py`
+
+#### 基本用法
+```bash
+# 使用自动生成的测试图片
+python dev_tests/demo_chat_with_image.py --text "描述这张图片"
+
+# 使用自定义图片
+python dev_tests/demo_chat_with_image.py --text "这是什么？" --image path/to/image.png
+
+# 继续会话
+python dev_tests/demo_chat_with_image.py --text "更详细地分析" --session-id <session-id>
+```
+
+#### Python 代码示例
+```python
+import httpx
+import base64
+
+# 读取并编码图片
+with open("screenshot.png", "rb") as f:
+    image_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+# 构建消息
+message = [
+    {"type": "text", "text": "请帮我实现这个UI界面"},
+    {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": image_base64
+        }
+    }
+]
+
+# 发送请求
+async with httpx.AsyncClient(auth=("admin", "642531")) as client:
+    async with client.stream(
+        "POST",
+        "http://127.0.0.1:8207/chat",
+        json={
+            "message": message,
+            "cwd": "/path/to/project",
+            "permission_mode": "default"
+        }
+    ) as response:
+        async for line in response.aiter_lines():
+            print(line)
+```
+
+### 9.6 典型应用场景
+
+1. **UI/UX 实现**：发送设计稿截图，让 Claude 生成对应的 HTML/CSS/React 代码
+2. **错误诊断**：发送错误截图，让 Claude 分析问题并提供解决方案
+3. **文档分析**：发送文档截图，让 Claude 提取信息或回答问题
+4. **代码审查**：发送代码截图，让 Claude 提供改进建议
+5. **架构设计**：发送架构图，让 Claude 帮助实现或优化
+
+### 9.7 更多信息
+
+详细使用说明请参考：`dev_tests/README_image_chat.md`

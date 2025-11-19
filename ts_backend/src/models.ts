@@ -54,10 +54,23 @@ export interface SessionSummary {
   message_count: number;
 }
 
+// Message content can be a string or an array of content blocks
+export type MessageContent = string | Array<{
+  type: "text";
+  text: string;
+} | {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+    data: string;
+  };
+}>;
+
 export interface ChatRequest extends ClaudeChatOptionsPayload {
   session_id?: string;
   cwd?: string;
-  message: string;
+  message: MessageContent;
   permission_mode?: PermissionMode;
   system_prompt?: SystemPrompt;
 }
