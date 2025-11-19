@@ -291,7 +291,7 @@ Codex HTTP 路径与 Claude 路径的鉴权与返回格式保持一致，只是�
 ### 9.4 注意事项
 
 1. **图片大小限制**：
-   - 默认 JSON body 限制为 1MB
+   - 默认 JSON body 限制为 5MB
    - Base64 编码会使图片大小增加约 33%
    - 建议在发送前压缩或调整图片大小
    - 如需更大限制，可在 `ts_backend/src/app.ts` 中修改 `express.json({ limit: "10mb" })`

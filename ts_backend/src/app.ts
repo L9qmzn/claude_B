@@ -392,7 +392,7 @@ export function createApp(): express.Express {
   }
 
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "5mb" }));
   app.use((req, res, next) => {
     if (!ENABLE_VERBOSE_LOGS) {
       next();

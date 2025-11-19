@@ -164,7 +164,7 @@ python demo_chat_with_image.py ...
 
 ### 问题：图片太大导致请求失败
 
-**解决方案**: 后端的 JSON body 限制是 1MB。如果图片过大，需要先压缩或调整大小。或者修改 `ts_backend/src/app.ts` 中的限制：
+**解决方案**: 后端的 JSON body 限制是 5MB。如果图片过大，需要先压缩或调整大小。或者修改 `ts_backend/src/app.ts` 中的限制：
 
 ```typescript
 app.use(express.json({ limit: "10mb" })); // 增加到 10MB
